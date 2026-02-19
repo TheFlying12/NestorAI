@@ -1,7 +1,0 @@
-curl -X POST \
-  "https://api.telegram.org/bot8258924062:AAERNTbwrUniranvxNi_lgJiy4PHXA5YgIw/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{
-        "url": "https://nonaphoristically-promycelial-hendrix.ngrok-free.dev/webhook",
-        "secret_token": "6ed738698fdf137d7e08a67926ac3a73ac4dd38e37ef0741d9f90f83ac3844da"
-      }'
