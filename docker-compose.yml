@@ -1,0 +1,91 @@
+services:
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OPENCLAW_MODE: local
+      OPENCLAW_LLM_PROVIDER: ollama
+      OPENCLAW_LLM_BASE_URL: http://ollama:11434
+      OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      OPENCLAW_DATA_DIR: /data
+      OPENCLAW_LOG_LEVEL: INFO
+    volumes:
+      - openclaw_data:/data
+    networks:
+      - local_ai_net
+    ports:
+      - "8080:8080"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - local_ai_net
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  gateway:
+    build:
+      context: ./gateway_service
+    container_name: gateway-service
+    restart: unless-stopped
+    depends_on:
+      openclaw:
+        condition: service_started
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      PROVIDER: telegram
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+      OPENCLAW_URL: http://openclaw:8080
+      OPENCLAW_ROUTE: /v1/skills/dispatch
+      DB_PATH: /data/gateway.db
+      RAM_WARN_THRESHOLD_GB: "2.0"
+      VRAM_WARN_MB: "2048"
+    volumes:
+      - gateway_data:/data
+    networks:
+      - local_ai_net
+    ports:
+      - "9000:9000"
+
+  # Optional: run LocalAI instead of Ollama by enabling profile "localai"
+  # localai:
+  #   image: localai/localai:latest-aio-cpu
+  #   container_name: localai
+  #   restart: unless-stopped
+  #   profiles: ["localai"]
+  #   environment:
+  #     DEBUG: "true"
+  #   volumes:
+  #     - localai_models:/models
+  #   networks:
+  #     - local_ai_net
+  #   ports:
+  #     - "8081:8080"
+
+networks:
+  local_ai_net:
+    driver: bridge
+
+volumes:
+  openclaw_data:
+  ollama_data:
+  gateway_data:
+  # localai_models:

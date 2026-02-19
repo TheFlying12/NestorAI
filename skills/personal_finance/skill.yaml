@@ -1,0 +1,79 @@
+version: 0.1
+kind: openclaw.skill
+name: personal_finance
+summary: Capture expenses and return local spending reports.
+
+runtime:
+  type: local
+  database: sqlite:///data/finance.db
+  privacy:
+    inference_mode: localhost_only
+    external_inference_calls: false
+
+routing:
+  priority: 90
+  triggers:
+    intents:
+      - id: add_expense
+        examples:
+          - "I spent $15 on coffee"
+          - "spent 42 dollars on groceries"
+          - "add expense: lunch 12.50"
+      - id: report_spending
+        examples:
+          - "show my spending report"
+          - "what did I spend this week?"
+          - "monthly expense summary"
+
+actions:
+  - id: add_expense
+    description: Parse merchant/category/amount/date and persist expense row.
+    pipeline:
+      - task: nlp.extract_expense
+        output: parsed_expense
+      - task: db.insert
+        table: expenses
+        values_from: parsed_expense
+      - task: respond
+        template: "Logged ${amount} for ${category}."
+
+  - id: report_spending
+    description: Build local summary report grouped by category and date range.
+    pipeline:
+      - task: nlp.extract_date_range
+        output: report_range
+      - task: db.query
+        sql: |
+          SELECT category, ROUND(SUM(amount), 2) AS total
+          FROM expenses
+          WHERE date(timestamp) BETWEEN date(:start_date) AND date(:end_date)
+          GROUP BY category
+          ORDER BY total DESC;
+        params_from: report_range
+      - task: respond.report
+        template: |
+          Spending report (${start_date} -> ${end_date})\n
+          ${rows}
+
+schema:
+  migrations:
+    - id: 001_create_expenses
+      sql: |
+        CREATE TABLE IF NOT EXISTS expenses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount REAL NOT NULL CHECK(amount >= 0),
+          category TEXT NOT NULL,
+          merchant TEXT,
+          note TEXT,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          timestamp TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_expenses_user_ts ON expenses (user_id, timestamp);
+
+observability:
+  log_level: INFO
+  warnings:
+    low_ram_gb: 2
+    low_vram_mb: 2048
