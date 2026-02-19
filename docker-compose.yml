@@ -1,11 +1,17 @@
 services:
     openclaw:
-      image: ghcr.io/openclaw/openclaw:latest   # (or whatever you’re using)
       container_name: openclaw
+      image: ghcr.io/openclaw/openclaw:latest
       restart: unless-stopped
       depends_on:
         ollama:
           condition: service_healthy
+      healthcheck:
+        test: ["CMD", "node", "openclaw.mjs", "gateway", "health"]
+        interval: 10s
+        timeout: 5s
+        retries: 12
+        start_period: 30s
       environment:
         OPENCLAW_MODE: local
         OPENCLAW_LLM_PROVIDER: ollama
@@ -13,7 +19,8 @@ services:
         OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
         OPENCLAW_DATA_DIR: /data
         OPENCLAW_LOG_LEVEL: INFO
-      command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--host","0.0.0.0","--port","18789"]
+        OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan","--port","18789"]
       ports: 
         - "18789:18789"
       volumes:
@@ -47,7 +54,7 @@ services:
       restart: unless-stopped
       depends_on:
         openclaw:
-          condition: service_started
+          condition: service_healthy
       environment:
         APP_ENV: production
         LOG_LEVEL: INFO
@@ -56,6 +63,7 @@ services:
         TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
         OPENCLAW_URL: http://openclaw:18789
         OPENCLAW_ROUTE: /v1/skills/dispatch
+        OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
         DB_PATH: /data/gateway.db
         RAM_WARN_THRESHOLD_GB: "2.0"
         VRAM_WARN_MB: "2048"
@@ -66,21 +74,6 @@ services:
       ports:
         - "9000:9000"
 
-  # Optional: run LocalAI instead of Ollama by enabling profile "localai"
-  # localai:
-  #   image: localai/localai:latest-aio-cpu
-  #   container_name: localai
-  #   restart: unless-stopped
-  #   profiles: ["localai"]
-  #   environment:
-  #     DEBUG: "true"
-  #   volumes:
-  #     - localai_models:/models
-  #   networks:
-  #     - local_ai_net
-  #   ports:
-  #     - "8081:8080"
-
 networks:
   local_ai_net:
     driver: bridge
@@ -89,4 +82,3 @@ volumes:
   openclaw_data:
   ollama_data:
   gateway_data:
-  # localai_models:

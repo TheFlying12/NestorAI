@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -22,9 +23,19 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://openclaw:8080")
 OPENCLAW_ROUTE = os.getenv("OPENCLAW_ROUTE", "/v1/skills/dispatch")
+OPENCLAW_GATEWAY_TOKEN = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
 RAM_WARN_THRESHOLD_GB = float(os.getenv("RAM_WARN_THRESHOLD_GB", "2.0"))
 VRAM_WARN_MB = int(os.getenv("VRAM_WARN_MB", "2048"))
+
+DISPATCH_MAX_RETRIES = 3
+DISPATCH_INITIAL_DELAY = 1.0
+
+
+def _auth_headers() -> Dict[str, str]:
+    if OPENCLAW_GATEWAY_TOKEN:
+        return {"Authorization": f"Bearer {OPENCLAW_GATEWAY_TOKEN}"}
+    return {}
 
 
 def _ensure_local_target(url: str) -> None:
@@ -87,6 +98,24 @@ async def _store_message(provider: str, user_id: str, chat_id: str, direction: s
         await db.commit()
 
 
+async def _wait_for_openclaw() -> None:
+    """Block startup until OpenClaw is reachable (up to ~120s)."""
+    health_url = f"{OPENCLAW_URL.rstrip('/')}/health"
+    max_attempts = 24
+    for i in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(health_url, headers=_auth_headers())
+                if r.status_code < 500:
+                    logger.info("OpenClaw reachable after %d attempt(s)", i)
+                    return
+        except httpx.HTTPError:
+            pass
+        logger.info("Waiting for OpenClaw... attempt %d/%d", i, max_attempts)
+        await asyncio.sleep(5)
+    logger.error("OpenClaw not reachable after %ds — gateway may return errors", max_attempts * 5)
+
+
 async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
     payload = {
         "source": "telegram",
@@ -97,18 +126,36 @@ async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
     }
 
     target = f"{OPENCLAW_URL.rstrip('/')}{OPENCLAW_ROUTE}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(target, json=payload)
-        response.raise_for_status()
-        data: Dict[str, Any] = response.json()
+    delay = DISPATCH_INITIAL_DELAY
 
-    # Support a few common response shapes for compatibility.
-    return (
-        data.get("reply")
-        or data.get("message")
-        or data.get("output")
-        or "I could not generate a response locally."
-    )
+    for attempt in range(1, DISPATCH_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(target, json=payload, headers=_auth_headers())
+                response.raise_for_status()
+                data: Dict[str, Any] = response.json()
+
+            # Support a few common response shapes for compatibility.
+            return (
+                data.get("reply")
+                or data.get("message")
+                or data.get("output")
+                or "I could not generate a response locally."
+            )
+        except httpx.HTTPError:
+            if attempt == DISPATCH_MAX_RETRIES:
+                raise
+            logger.warning(
+                "OpenClaw dispatch attempt %d/%d failed, retrying in %.1fs",
+                attempt,
+                DISPATCH_MAX_RETRIES,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+
+    # Should never reach here, but satisfy the type checker.
+    raise httpx.ConnectError("All retry attempts exhausted")
 
 
 async def _send_telegram_message(chat_id: str, text: str) -> None:
@@ -128,6 +175,7 @@ async def startup() -> None:
     _ensure_local_target(OPENCLAW_URL)
     await _init_db()
     _log_resource_warnings()
+    await _wait_for_openclaw()
     logger.info("Gateway startup complete")
 
 
@@ -163,7 +211,7 @@ async def telegram_webhook(
     try:
         reply = await _dispatch_to_openclaw(user_id=user_id, chat_id=chat_id, text=text)
     except httpx.HTTPError:
-        logger.exception("OpenClaw dispatch failed")
+        logger.exception("OpenClaw dispatch failed after %d retries", DISPATCH_MAX_RETRIES)
         reply = "Local assistant is currently unavailable. Please try again shortly."
 
     await _store_message("telegram", user_id, chat_id, "outbound", reply)
