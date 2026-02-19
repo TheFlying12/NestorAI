@@ -21,9 +21,11 @@ logger = logging.getLogger("gateway")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://openclaw:8080")
 OPENCLAW_ROUTE = os.getenv("OPENCLAW_ROUTE", "/v1/skills/dispatch")
 OPENCLAW_GATEWAY_TOKEN = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
+OPENCLAW_MODEL = os.getenv("OPENCLAW_MODEL", "openclaw")
 DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
 RAM_WARN_THRESHOLD_GB = float(os.getenv("RAM_WARN_THRESHOLD_GB", "2.0"))
 VRAM_WARN_MB = int(os.getenv("VRAM_WARN_MB", "2048"))
@@ -116,24 +118,73 @@ async def _wait_for_openclaw() -> None:
     logger.error("OpenClaw not reachable after %ds — gateway may return errors", max_attempts * 5)
 
 
-async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
+async def _configure_telegram_webhook() -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_WEBHOOK_URL:
+        logger.info("Telegram webhook not configured (missing token or webhook URL).")
+        return
+
+    if not TELEGRAM_WEBHOOK_URL.startswith("https://"):
+        logger.error("TELEGRAM_WEBHOOK_URL must be https:// for Telegram webhooks.")
+        return
+
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook"
     payload = {
-        "source": "telegram",
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "text": text,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "url": TELEGRAM_WEBHOOK_URL.rstrip("/") + "/webhook/telegram",
+        "secret_token": TELEGRAM_WEBHOOK_SECRET or None,
+        "allowed_updates": ["message", "edited_message"],
     }
 
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(api_url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPError:
+        logger.exception("Failed to configure Telegram webhook")
+        return
+
+    if not data.get("ok"):
+        logger.error("Telegram webhook configuration failed: %s", data)
+        return
+
+    logger.info("Telegram webhook configured: %s", payload["url"])
+
+
+async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
     target = f"{OPENCLAW_URL.rstrip('/')}{OPENCLAW_ROUTE}"
+    is_chat_completions = OPENCLAW_ROUTE.rstrip("/").endswith("/v1/chat/completions")
     delay = DISPATCH_INITIAL_DELAY
 
     for attempt in range(1, DISPATCH_MAX_RETRIES + 1):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                if is_chat_completions:
+                    payload = {
+                        "model": OPENCLAW_MODEL,
+                        "stream": False,
+                        "messages": [{"role": "user", "content": text}],
+                    }
+                else:
+                    payload = {
+                        "source": "telegram",
+                        "user_id": user_id,
+                        "chat_id": chat_id,
+                        "text": text,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+
                 response = await client.post(target, json=payload, headers=_auth_headers())
                 response.raise_for_status()
                 data: Dict[str, Any] = response.json()
+
+            if is_chat_completions:
+                choices = data.get("choices") or []
+                if choices:
+                    message = choices[0].get("message") or {}
+                    content = message.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                return "I could not generate a response locally."
 
             # Support a few common response shapes for compatibility.
             return (
@@ -176,6 +227,7 @@ async def startup() -> None:
     await _init_db()
     _log_resource_warnings()
     await _wait_for_openclaw()
+    await _configure_telegram_webhook()
     logger.info("Gateway startup complete")
 
 

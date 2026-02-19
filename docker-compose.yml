@@ -7,7 +7,7 @@ services:
         ollama:
           condition: service_healthy
       healthcheck:
-        test: ["CMD", "node", "openclaw.mjs", "gateway", "health"]
+        test: ["CMD", "node", "-e", "fetch('http://localhost:18789/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
         interval: 10s
         timeout: 5s
         retries: 12
@@ -17,7 +17,9 @@ services:
         OPENCLAW_LLM_PROVIDER: ollama
         OPENCLAW_LLM_BASE_URL: http://ollama:11434
         OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
+        OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
         OPENCLAW_DATA_DIR: /data
+        OPENCLAW_STATE_DIR: /data
         OPENCLAW_LOG_LEVEL: INFO
         OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan","--port","18789"]
@@ -61,8 +63,9 @@ services:
         PROVIDER: telegram
         TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
         TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+        TELEGRAM_WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL}
         OPENCLAW_URL: http://openclaw:18789
-        OPENCLAW_ROUTE: /v1/skills/dispatch
+        OPENCLAW_ROUTE: /v1/chat/completions
         OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
         DB_PATH: /data/gateway.db
         RAM_WARN_THRESHOLD_GB: "2.0"
