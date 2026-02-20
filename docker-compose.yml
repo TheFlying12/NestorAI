@@ -6,6 +6,8 @@ services:
       depends_on:
         ollama:
           condition: service_healthy
+        ollama_init:
+          condition: service_completed_successfully
       healthcheck:
         test: ["CMD", "node", "-e", "fetch('http://localhost:18789/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
         interval: 10s
@@ -16,7 +18,7 @@ services:
         OPENCLAW_MODE: local
         OPENCLAW_LLM_PROVIDER: ollama
         OPENCLAW_LLM_BASE_URL: http://ollama:11434
-        OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
+        OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.2:1b-instruct-q4_K_M}
         OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
         OPENCLAW_DATA_DIR: /data
         OPENCLAW_STATE_DIR: /data
@@ -27,6 +29,7 @@ services:
         - "18789:18789"
       volumes:
         - openclaw_data:/data
+        - ./skills:/data/skills:ro
       networks:
         - local_ai_net
 
@@ -48,6 +51,27 @@ services:
         timeout: 10s
         retries: 10
         start_period: 20s
+
+    ollama_init:
+      image: curlimages/curl:latest
+      container_name: ollama-init
+      depends_on:
+        ollama:
+          condition: service_healthy
+      restart: "no"
+      command:
+        [
+          "-sS",
+          "-X",
+          "POST",
+          "http://ollama:11434/api/pull",
+          "-H",
+          "Content-Type: application/json",
+          "-d",
+          "{\"name\":\"${OPENCLAW_LLM_MODEL:-llama3.2:1b-instruct-q4_K_M}\"}"
+        ]
+      networks:
+        - local_ai_net
 
     gateway:
       build:
