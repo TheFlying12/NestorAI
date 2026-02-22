@@ -16,13 +16,13 @@
         "apiKey": "ollama-local",
         "models": [
           {
-            "id": "llama3.2:1b-instruct-q4_K_M",
-            "name": "llama3.2:1b-instruct-q4_K_M",
+            "id": "llama3.1:8b-instruct-q4_K_M",
+            "name": "llama3.1:8b-instruct-q4_K_M",
             "reasoning": false,
             "input": ["text"],
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": 8192,
-            "maxTokens": 81920
+            "contextWindow": 32768,
+            "maxTokens": 32768
           }
         ]
       }
@@ -31,7 +31,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "ollama/llama3.2:1b-instruct-q4_K_M"
+        "primary": "ollama/llama3.1:8b-instruct-q4_K_M"
       }
     }
   }
