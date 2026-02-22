@@ -1,5 +1,8 @@
+import asyncio
 import logging
 import os
+import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -18,8 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("gateway")
 
+START_TIME = time.monotonic()
+
+PROVIDER = os.getenv("PROVIDER", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://openclaw:8080")
 OPENCLAW_ROUTE = os.getenv("OPENCLAW_ROUTE", "/v1/skills/dispatch")
 DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
@@ -68,6 +75,32 @@ def _log_resource_warnings() -> None:
     )
 
 
+def _validate_telegram_config() -> None:
+    if PROVIDER.lower() != "telegram":
+        return
+
+    if TELEGRAM_BOT_TOKEN:
+        logger.info("TELEGRAM_BOT_TOKEN present")
+    else:
+        logger.warning("TELEGRAM_BOT_TOKEN missing for telegram provider")
+
+    if "TELEGRAM_WEBHOOK_URL" in os.environ:
+        if TELEGRAM_WEBHOOK_URL:
+            parsed = urlparse(TELEGRAM_WEBHOOK_URL)
+            if parsed.scheme != "https" or not parsed.netloc:
+                logger.warning("TELEGRAM_WEBHOOK_URL must be https:// and include a host")
+            else:
+                logger.info("TELEGRAM_WEBHOOK_URL present")
+        else:
+            logger.warning("TELEGRAM_WEBHOOK_URL set but empty")
+
+    if "TELEGRAM_WEBHOOK_SECRET" in os.environ:
+        if TELEGRAM_WEBHOOK_SECRET:
+            logger.info("TELEGRAM_WEBHOOK_SECRET present")
+        else:
+            logger.warning("TELEGRAM_WEBHOOK_SECRET set but empty")
+
+
 async def _store_message(provider: str, user_id: str, chat_id: str, direction: str, text: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -84,7 +117,43 @@ async def _store_message(provider: str, user_id: str, chat_id: str, direction: s
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        await db.commit()
+    await db.commit()
+
+
+async def _check_openclaw_reachable() -> bool:
+    base = OPENCLAW_URL.rstrip("/")
+    targets = [base, f"{base}{OPENCLAW_ROUTE}"]
+    timeout = httpx.Timeout(1.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for target in targets:
+            try:
+                await client.head(target)
+                return True
+            except httpx.HTTPError:
+                try:
+                    await client.get(target)
+                    return True
+                except httpx.HTTPError:
+                    continue
+    return False
+
+
+async def _check_db_writable() -> bool:
+    def _try_write_temp(path: str) -> bool:
+        directory = os.path.dirname(path) or "."
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, delete=True):
+                return True
+        except OSError:
+            return False
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("SELECT 1")
+    except Exception:
+        return False
+
+    return await asyncio.to_thread(_try_write_temp, DB_PATH)
 
 
 async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
@@ -128,12 +197,24 @@ async def startup() -> None:
     _ensure_local_target(OPENCLAW_URL)
     await _init_db()
     _log_resource_warnings()
+    _validate_telegram_config()
     logger.info("Gateway startup complete")
 
 
 @app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "gateway"}
+async def health() -> Dict[str, Any]:
+    # Health stays 200 to enable basic liveness even if dependencies are degraded.
+    openclaw_reachable, db_writable = await asyncio.gather(
+        _check_openclaw_reachable(),
+        _check_db_writable(),
+    )
+    return {
+        "status": "ok",
+        "uptime_s": round(time.monotonic() - START_TIME, 3),
+        "provider": PROVIDER or "unknown",
+        "openclaw_reachable": openclaw_reachable,
+        "db_writable": db_writable,
+    }
 
 
 @app.post("/webhook/telegram")

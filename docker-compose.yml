@@ -13,7 +13,8 @@ services:
         OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.1:8b-instruct-q4_K_M}
         OPENCLAW_DATA_DIR: /data
         OPENCLAW_LOG_LEVEL: INFO
-      command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--host","0.0.0.0","--port","18789"]
+        OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan","--port","18789"]
       ports: 
         - "18789:18789"
       volumes:
