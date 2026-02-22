@@ -14,12 +14,13 @@ services:
         OPENCLAW_DATA_DIR: /data
         OPENCLAW_LOG_LEVEL: INFO
         OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+        OPENCLAW_CONFIG_PATH: /config/openclaw.json
       command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan","--port","18789"]
       ports: 
         - "18789:18789"
       volumes:
         - openclaw_data:/data
-        - ./openclaw.json:/home/node/.openclaw/openclaw.json:ro
+        - ./openclaw.json:/config/openclaw.json:ro
       networks:
         - local_ai_net
 
