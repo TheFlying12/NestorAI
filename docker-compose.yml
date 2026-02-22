@@ -19,6 +19,7 @@ services:
         - "18789:18789"
       volumes:
         - openclaw_data:/data
+        - ./openclaw.json:/home/node/.openclaw/openclaw.json:ro
       networks:
         - local_ai_net
 
@@ -57,6 +58,7 @@ services:
         TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
         OPENCLAW_URL: http://openclaw:18789
         OPENCLAW_ROUTE: /v1/chat/completions
+        OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
         DB_PATH: /data/gateway.db
         RAM_WARN_THRESHOLD_GB: "2.0"
         VRAM_WARN_MB: "2048"

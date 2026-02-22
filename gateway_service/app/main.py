@@ -29,6 +29,7 @@ TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://openclaw:8080")
 OPENCLAW_ROUTE = os.getenv("OPENCLAW_ROUTE", "/v1/chat/completions")
+OPENCLAW_GATEWAY_TOKEN = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
 RAM_WARN_THRESHOLD_GB = float(os.getenv("RAM_WARN_THRESHOLD_GB", "2.0"))
 VRAM_WARN_MB = int(os.getenv("VRAM_WARN_MB", "2048"))
@@ -169,8 +170,11 @@ async def _dispatch_to_openclaw(user_id: str, chat_id: str, text: str) -> str:
     }
 
     target = f"{OPENCLAW_URL.rstrip('/')}{OPENCLAW_ROUTE}"
+    headers = {}
+    if OPENCLAW_GATEWAY_TOKEN:
+        headers["Authorization"] = f"Bearer {OPENCLAW_GATEWAY_TOKEN}"
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(target, json=payload)
+        response = await client.post(target, json=payload, headers=headers)
         response.raise_for_status()
         data: Dict[str, Any] = response.json()
 
