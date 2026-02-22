@@ -102,22 +102,25 @@ def _validate_telegram_config() -> None:
 
 
 async def _store_message(provider: str, user_id: str, chat_id: str, direction: str, text: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO message_history (provider, user_id, chat_id, direction, message_text, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                provider,
-                user_id,
-                chat_id,
-                direction,
-                text,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-    await db.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO message_history (provider, user_id, chat_id, direction, message_text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    provider,
+                    user_id,
+                    chat_id,
+                    direction,
+                    text,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to store message in gateway DB")
 
 
 async def _check_openclaw_reachable() -> bool:
