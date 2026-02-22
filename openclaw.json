@@ -11,8 +11,20 @@
   "models": {
     "providers": {
       "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "api": "ollama",
         "apiKey": "ollama-local",
-        "baseUrl": "http://ollama:11434"
+        "models": [
+          {
+            "id": "llama3.2:1b-instruct-q4_K_M",
+            "name": "llama3.2:1b-instruct-q4_K_M",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 8192,
+            "maxTokens": 81920
+          }
+        ]
       }
     }
   },
