@@ -7,5 +7,20 @@
         }
       }
     }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "apiKey": "ollama-local",
+        "baseUrl": "http://ollama:11434"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/llama3.2:1b-instruct-q4_K_M"
+      }
+    }
   }
 }
