@@ -1,7 +1,0 @@
-Future Plans
-
-- Finish the Ollama model download, then verify Telegram round-trip end-to-end.
-- Add a health-check script to validate webhook, gateway, OpenClaw, and Ollama in one pass.
-- Add a lightweight test harness for webhook payloads and OpenClaw responses.
-- Document model download time/size and provide a smaller fallback model option.
-- Add a simple admin endpoint to inspect recent message history and dispatch errors.
