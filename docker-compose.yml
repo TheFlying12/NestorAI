@@ -16,10 +16,12 @@ services:
         start_period: 30s
       environment:
         OPENCLAW_MODE: local
-        OPENCLAW_LLM_PROVIDER: ollama
+        OPENCLAW_LLM_PROVIDER: ${OPENCLAW_LLM_PROVIDER:-ollama}
         OPENCLAW_LLM_BASE_URL: http://ollama:11434
         OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.2:1b-instruct-q4_K_M}
         OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
+        OPENAI_API_KEY: ${OPENAI_API_KEY}
+        GEMINI_API_KEY: ${GEMINI_API_KEY}
         OPENCLAW_DATA_DIR: /data
         OPENCLAW_STATE_DIR: /data
         OPENCLAW_LOG_LEVEL: INFO
