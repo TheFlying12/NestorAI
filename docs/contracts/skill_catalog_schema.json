@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillCatalog",
+  "type": "object",
+  "required": ["version", "generated_at", "skills"],
+  "properties": {
+    "version": { "type": "string" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "skill_id",
+          "version",
+          "archive_url",
+          "sha256",
+          "size_bytes",
+          "compat"
+        ],
+        "properties": {
+          "skill_id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "archive_url": { "type": "string", "format": "uri" },
+          "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 1 },
+          "compat": {
+            "type": "object",
+            "required": ["min_openclaw_version", "min_agent_version"],
+            "properties": {
+              "min_openclaw_version": { "type": "string" },
+              "min_agent_version": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

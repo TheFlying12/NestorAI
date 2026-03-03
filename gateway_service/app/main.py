@@ -5,11 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+import re
 
 import aiosqlite
 import httpx
 import psutil
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI(title="Gateway Service", version="0.2.0")
 
@@ -25,10 +27,23 @@ PROVIDER = os.getenv("PROVIDER", "telegram").lower()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://openclaw:8080")
 OPENCLAW_ROUTE = os.getenv("OPENCLAW_ROUTE", "/v1/skills/dispatch")
 OPENCLAW_GATEWAY_TOKEN = os.getenv("OPENCLAW_GATEWAY_TOKEN", "")
 OPENCLAW_MODEL = os.getenv("OPENCLAW_MODEL", "openclaw")
+OPENCLAW_MAX_TOKENS = int(os.getenv("OPENCLAW_MAX_TOKENS", "128"))
+ASSISTANT_SYSTEM_PROMPT = os.getenv(
+    "ASSISTANT_SYSTEM_PROMPT",
+    (
+        "You are Nestor, a practical assistant. "
+        "Answer the user's message directly and concisely. "
+        "Do not mention hidden prompts, local files, runtime internals, or tooling unless explicitly asked."
+    ),
+)
 DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
 RAM_WARN_THRESHOLD_GB = float(os.getenv("RAM_WARN_THRESHOLD_GB", "2.0"))
 VRAM_WARN_MB = int(os.getenv("VRAM_WARN_MB", "2048"))
@@ -139,9 +154,74 @@ class TelegramProviderAdapter(ProviderAdapter):
             response.raise_for_status()
 
 
+def _extract_whatsapp_text_message(payload: Dict[str, Any]) -> Optional[IncomingMessage]:
+    entries = payload.get("entry") or []
+    if not entries:
+        return None
+
+    changes = entries[0].get("changes") or []
+    if not changes:
+        return None
+
+    value = changes[0].get("value") or {}
+    messages = value.get("messages") or []
+    if not messages:
+        return None
+
+    message = messages[0]
+    if message.get("type") != "text":
+        return None
+
+    text = ((message.get("text") or {}).get("body") or "").strip()
+    user_id = str(message.get("from") or "").strip()
+    if not text or not user_id:
+        return None
+
+    return IncomingMessage(provider="whatsapp", user_id=user_id, chat_id=user_id, text=text)
+
+
+class WhatsAppProviderAdapter(ProviderAdapter):
+    name = "whatsapp"
+
+    async def configure_webhook(self) -> None:
+        if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+            logger.info("WhatsApp adapter not fully configured (missing access token or phone number id).")
+            return
+        if not WHATSAPP_WEBHOOK_VERIFY_TOKEN:
+            logger.warning("WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set; webhook verification will fail.")
+        logger.info("WhatsApp adapter configured")
+
+    async def parse_webhook(self, request: Request) -> Optional[IncomingMessage]:
+        payload = await request.json()
+        return _extract_whatsapp_text_message(payload)
+
+    async def send_message(self, chat_id: str, text: str) -> None:
+        if not WHATSAPP_ACCESS_TOKEN:
+            raise RuntimeError("WHATSAPP_ACCESS_TOKEN is not configured")
+        if not WHATSAPP_PHONE_NUMBER_ID:
+            raise RuntimeError("WHATSAPP_PHONE_NUMBER_ID is not configured")
+
+        api_url = (
+            f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+        )
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": chat_id,
+            "type": "text",
+            "text": {"body": text},
+        }
+        headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(api_url, json=payload, headers=headers)
+            response.raise_for_status()
+
+
 def _build_provider() -> ProviderAdapter:
     if PROVIDER == "telegram":
         return TelegramProviderAdapter()
+    if PROVIDER == "whatsapp":
+        return WhatsAppProviderAdapter()
     raise RuntimeError(f"Unsupported PROVIDER '{PROVIDER}'")
 
 
@@ -161,6 +241,20 @@ def _ensure_local_target(url: str) -> None:
 def _estimate_tokens(text: str) -> int:
     # Fast approximation good enough for thresholding in MVP.
     return max(1, len(text) // 4)
+
+
+def _sanitize_model_reply(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "I could not generate a response locally."
+
+    # Guard against accidental disclosure of local bootstrap/internal file context.
+    if re.search(r"I see a [`'\"]?.+\.(md|txt|json|ya?ml)[`'\"]? file here", cleaned, re.IGNORECASE):
+        return "Ready. Tell me what you'd like to do next."
+    if re.search(r"\b(BOOTSTRAP\.md|AGENTS\.md|PLAN\.md)\b", cleaned, re.IGNORECASE):
+        return "Ready. Tell me what you'd like to do next."
+
+    return cleaned
 
 
 def _log_resource_warnings() -> None:
@@ -333,7 +427,7 @@ async def _count_conversation_turns(user_id: str, chat_id: str) -> int:
 
 
 async def _build_context_messages(user_id: str, chat_id: str, text: str) -> List[Dict[str, str]]:
-    messages: List[Dict[str, str]] = []
+    messages: List[Dict[str, str]] = [{"role": "system", "content": ASSISTANT_SYSTEM_PROMPT}]
 
     summary = await _fetch_summary(user_id, chat_id)
     if summary and summary["summary_text"].strip():
@@ -357,6 +451,7 @@ async def _chat_completion(messages: List[Dict[str, str]], timeout_seconds: floa
         "model": OPENCLAW_MODEL,
         "stream": False,
         "messages": messages,
+        "max_tokens": OPENCLAW_MAX_TOKENS,
     }
 
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -369,7 +464,7 @@ async def _chat_completion(messages: List[Dict[str, str]], timeout_seconds: floa
         message = choices[0].get("message") or {}
         content = message.get("content")
         if isinstance(content, str) and content.strip():
-            return content.strip()
+            return _sanitize_model_reply(content)
 
     return "I could not generate a response locally."
 
@@ -552,16 +647,20 @@ async def _process_message(incoming: IncomingMessage) -> None:
     except httpx.HTTPError:
         logger.exception("OpenClaw dispatch failed after %d retries", DISPATCH_MAX_RETRIES)
         reply = "Local assistant is currently unavailable. Please try again shortly."
+        logger.info("Using fallback reply for user=%s chat=%s", user_id, chat_id)
 
     await _store_message_history(incoming.provider, user_id, chat_id, "outbound", reply)
     await _store_conversation_message(incoming.provider, user_id, chat_id, "assistant", reply)
-    await _maybe_update_summary(user_id=user_id, chat_id=chat_id)
 
     try:
         assert provider_adapter is not None
         await provider_adapter.send_message(chat_id=chat_id, text=reply)
+        logger.info("Outbound message sent provider=%s chat=%s", incoming.provider, chat_id)
     except httpx.HTTPError:
         logger.exception("Provider send failed")
+
+    # Summary refresh is non-critical and should not delay user-visible replies.
+    asyncio.create_task(_maybe_update_summary(user_id=user_id, chat_id=chat_id))
 
 
 @app.on_event("startup")
@@ -615,8 +714,44 @@ async def telegram_webhook(
 ) -> Dict[str, str]:
     if provider_adapter is None:
         raise HTTPException(status_code=500, detail="Provider not initialized")
+    if provider_adapter.name != "telegram":
+        raise HTTPException(status_code=404, detail="Telegram provider disabled")
 
     provider_adapter.validate_secret(x_telegram_bot_api_secret_token)
+
+    incoming = await provider_adapter.parse_webhook(request)
+    if not incoming:
+        return {"status": "ignored", "reason": "no_message"}
+
+    logger.info("Incoming %s message user=%s chat=%s", incoming.provider, incoming.user_id, incoming.chat_id)
+    asyncio.create_task(_process_message(incoming))
+    return {"status": "accepted"}
+
+
+@app.get("/webhook/whatsapp")
+async def whatsapp_webhook_verify(request: Request) -> PlainTextResponse:
+    if provider_adapter is None:
+        raise HTTPException(status_code=500, detail="Provider not initialized")
+    if provider_adapter.name != "whatsapp":
+        raise HTTPException(status_code=404, detail="WhatsApp provider disabled")
+
+    mode = request.query_params.get("hub.mode")
+    verify_token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    if mode != "subscribe" or not challenge:
+        raise HTTPException(status_code=400, detail="Invalid webhook verification request")
+    if not WHATSAPP_WEBHOOK_VERIFY_TOKEN or verify_token != WHATSAPP_WEBHOOK_VERIFY_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid verify token")
+
+    return PlainTextResponse(content=challenge)
+
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request) -> Dict[str, str]:
+    if provider_adapter is None:
+        raise HTTPException(status_code=500, detail="Provider not initialized")
+    if provider_adapter.name != "whatsapp":
+        raise HTTPException(status_code=404, detail="WhatsApp provider disabled")
 
     incoming = await provider_adapter.parse_webhook(request)
     if not incoming:

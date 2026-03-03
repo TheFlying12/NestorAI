@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceCommand",
+  "type": "object",
+  "required": [
+    "command_id",
+    "idempotency_key",
+    "command_type",
+    "expires_at",
+    "body"
+  ],
+  "properties": {
+    "command_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "command_type": {
+      "type": "string",
+      "enum": ["install_skill", "remove_skill", "set_model", "reload_runtime"]
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "body": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "command_type": {
+            "const": "install_skill"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "type": "object",
+            "required": ["skill_id", "version", "archive_url", "sha256"],
+            "properties": {
+              "skill_id": { "type": "string", "minLength": 1 },
+              "version": { "type": "string", "minLength": 1 },
+              "archive_url": { "type": "string", "format": "uri" },
+              "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
