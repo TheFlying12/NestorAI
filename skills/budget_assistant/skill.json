@@ -1,0 +1,57 @@
+{
+  "skill_id": "budget_assistant",
+  "version": "0.1.0",
+  "name": "Budget Assistant",
+  "description": "Track spending, categorize transactions, and get monthly budget summaries with natural-language explanations.",
+  "capabilities": [
+    "categorize_transaction",
+    "monthly_summary",
+    "budget_alert",
+    "explain"
+  ],
+  "runtime": {
+    "type": "python",
+    "entrypoint": "main.py",
+    "database": "sqlite:////data/budget_assistant.db",
+    "privacy": {
+      "inference_mode": "cloud_llm",
+      "external_inference_calls": true,
+      "external_inference_scope": "explanation_only"
+    }
+  },
+  "routing": {
+    "priority": 85,
+    "triggers": {
+      "intents": [
+        {
+          "id": "add_transaction",
+          "examples": [
+            "I spent $45 at Whole Foods",
+            "spent 12 on coffee",
+            "paid $120 for electricity",
+            "add expense: lunch 15.50",
+            "bought groceries for $80"
+          ]
+        },
+        {
+          "id": "monthly_summary",
+          "examples": [
+            "show my budget",
+            "monthly spending summary",
+            "what did I spend this month?",
+            "spending report for March",
+            "how am I doing on my budget?"
+          ]
+        }
+      ]
+    }
+  },
+  "config": {
+    "budgets": {
+      "food": 400,
+      "transport": 150,
+      "entertainment": 100,
+      "utilities": 200
+    }
+  }
+}

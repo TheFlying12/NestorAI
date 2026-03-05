@@ -1,103 +1,182 @@
-# NestorAI Gateway MVP (Phase 0)
+# NestorAI
 
-This repo contains a FastAPI gateway that receives Telegram webhooks and forwards messages to a local OpenClaw instance. The gateway persists conversation history in SQLite, builds context windows with rolling summaries, and replies to Telegram.
+Local-first AI agent runtime for Raspberry Pi. Cloud is a control plane only.
 
-## Quick Start (Local Docker)
-1. Create `.env` from `.env.example` and fill in the values.
-2. Start the stack:
+**MVP Goal:** Device pairing + one useful agent (Budget Assistant) running reliably on Pi.
 
-```bash
-docker compose up --build
+---
+
+## Architecture
+
+```
+Raspberry Pi (device)              Cloud (control plane)
+────────────────────────           ─────────────────────
+gateway_service  (Telegram)   ←→   cloud_service (FastAPI + PostgreSQL)
+openclaw runtime (skills)         ↑  WebSocket hub (command delivery)
+device_agent     (WS client) ─────┘
 ```
 
-The gateway listens on `http://localhost:9000` and exposes provider webhook endpoints:
-- Telegram: `POST /webhook/telegram`
-- WhatsApp: `GET /webhook/whatsapp` (Meta verify), `POST /webhook/whatsapp` (messages)
+- **LLM strategy (MVP):** Cloud LLM only (BYOK — device calls OpenAI/Gemini directly). No local Ollama required.
+- **Local Ollama** is opt-in: `docker compose --profile local up`.
 
-3. Run the health and smoke check:
+---
+
+## Quick Start — Local Dev
 
 ```bash
+# 1. Configure environment
+cp .env.example .env
+# Set: TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, OPENCLAW_GATEWAY_TOKEN
+
+# 2. Start the stack (cloud LLM mode)
+docker compose up --build
+
+# 3. Health check
 ./scripts/healthcheck.sh
 ```
 
-## Telegram Webhook Setup
-Telegram requires a public HTTPS URL. Use a tunnel (ngrok, cloudflared) and set:
+Gateway: `http://localhost:9000`
+- `POST /webhook/telegram` — Telegram inbound
+- `GET /health` — health
 
-```
-TELEGRAM_WEBHOOK_URL=https://your-public-domain
-```
+OpenClaw: `http://localhost:18789`
 
-On startup, the gateway calls Telegram `setWebhook` with:
-
-- URL: `TELEGRAM_WEBHOOK_URL + /webhook/telegram`
-- Secret: `TELEGRAM_WEBHOOK_SECRET` (header `x-telegram-bot-api-secret-token`)
-
-To verify the webhook:
+### Local LLM mode (opt-in)
 
 ```bash
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
+# In .env: OPENCLAW_LLM_PROVIDER=ollama, OPENCLAW_LLM_MODEL=llama3.2:1b-instruct-q4_K_M
+docker compose --profile local up
 ```
 
-## WhatsApp Webhook Setup (Meta Cloud API)
-Set these vars in `.env`:
+---
 
-```
-PROVIDER=whatsapp
-WHATSAPP_ACCESS_TOKEN=<meta-permanent-token>
-WHATSAPP_PHONE_NUMBER_ID=<phone-number-id>
-WHATSAPP_WEBHOOK_VERIFY_TOKEN=<verify-token-you-set-in-meta>
-```
+## Raspberry Pi Deploy (Phase 1)
 
-Configure Meta webhook callback URL to:
-
-```
-https://your-public-domain/webhook/whatsapp
-```
-
-Meta verification calls `GET /webhook/whatsapp` with `hub.*` query params; gateway returns the challenge when verify token matches `WHATSAPP_WEBHOOK_VERIFY_TOKEN`.
-
-## Local Development
-Run just the gateway locally from `gateway_service/`:
+See [`plans/pi-runbook.md`](plans/pi-runbook.md) for full instructions.
 
 ```bash
+# Clone on Pi
+git clone https://github.com/your-org/NestorAI.git && cd NestorAI
+cp .env.example .env && nano .env
+
+# Start with Pi-specific overrides
+docker compose -f docker-compose.yml -f compose-pi.yml up -d --build
+
+./scripts/healthcheck.sh
+```
+
+Pi uses `linux/arm64` images (set in `compose-pi.yml`) with memory limits tuned for Pi 5.
+
+---
+
+## Cloud Service Deploy (Phase 2)
+
+```bash
+cd cloud_service
+# Set DATABASE_URL and CLOUD_SECRET_KEY in environment
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 9000
+AUTO_MIGRATE=true uvicorn cloud_service.app.main:app --port 8080
+
+# Or with Alembic migrations:
+alembic upgrade head
+uvicorn cloud_service.app.main:app --port 8080
 ```
 
-## Context Management
-- The gateway sends a context window of the most recent turns (`CONTEXT_WINDOW_TURNS`, default `12`).
-- A rolling summary is maintained and injected into prompts when enabled (`ENABLE_CONTEXT_SUMMARY=true`).
-- Summaries refresh on token threshold or every `SUMMARY_UPDATE_EVERY_TURNS` turns.
-- Conversation data retention defaults to `90` days (`MESSAGE_RETENTION_DAYS`).
-- Users can clear memory for the current chat by sending `/forget`.
-- `ASSISTANT_SYSTEM_PROMPT` sets a hard response policy to keep replies user-focused and avoid unsolicited runtime/file disclosures.
+Cloud REST API:
+- `POST /api/pair/claim` — claim a device with pairing code → returns `device_token`
+- `GET /api/devices/{id}/status` — connection state, last_seen, installed skills
+- `POST /api/devices/{id}/commands` — push a command to device
+- `POST /api/devices/{id}/transfer/init` + `/confirm` — transfer ownership
 
-## Contracts and Runbooks
-- Device websocket protocol: `docs/contracts/websocket_protocol.md`
-- Command envelope schema: `docs/contracts/command_schema.json`
-- Skill catalog schema: `docs/contracts/skill_catalog_schema.json`
-- Context/memory contract: `docs/contracts/context_memory.md`
-- Raspberry Pi runbook: `docs/pi-runbook.md`
+WebSocket: `wss://<host>/devices/connect` — device agent connects here.
 
-## Configuration Notes
-- `OPENCLAW_URL` must be a local host (`openclaw`, `localhost`, etc.). The gateway refuses remote targets.
-- `OPENCLAW_GATEWAY_TOKEN` should match the token configured for OpenClaw.
-- SQLite data is stored at `/data/gateway.db` inside the container.
-- `PROVIDER` supports `telegram` and `whatsapp`.
-- `OPENCLAW_ROUTE` should be `/v1/chat/completions` for chat payloads.
+---
 
-## Troubleshooting
-- No replies in Telegram: confirm the bot has a webhook, and the URL is reachable via HTTPS.
-- 401 from gateway: the Telegram webhook secret does not match.
-- OpenClaw errors: check `docker compose logs openclaw` and ensure the health check passes.
-- Run `./scripts/healthcheck.sh` to identify failing edges quickly.
+## Device Pairing
 
-## Test (Fast Path)
-From the gateway container:
+```bash
+# 1. Add device + pairing code to cloud DB (admin/factory step)
+# 2. Claim from any machine:
+curl -X POST https://your-cloud/api/pair/claim \
+  -H "Content-Type: application/json" \
+  -d '{"device_id": "YOUR_DEVICE_ID", "pairing_code": "YOUR_CODE"}'
+# Returns {"device_token": "...", "claimed_at": "..."}
 
+# 3. Set DEVICE_TOKEN=<returned token> in .env on the Pi
+# 4. Restart device_agent: docker compose restart device_agent
+```
+
+---
+
+## Budget Assistant Skill
+
+The Budget Assistant is the MVP skill. Send to Telegram:
+
+- **Log a transaction:** `I spent $45 at Whole Foods`
+- **Monthly summary:** `show my budget` or `what did I spend this month?`
+
+Categorization and math are deterministic (local). LLM is used only for natural-language explanation.
+
+---
+
+## Testing
+
+```bash
+# Gateway tests (run from gateway_service/)
+cd gateway_service
+python -m unittest discover -s tests -p "test_*.py" -v
+
+# Cloud service tests
+python -m unittest discover -s cloud_service/tests -p "test_*.py" -v
+
+# Device agent tests
+cd device_agent
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Or from inside a running container:
 ```bash
 docker exec gateway-service python -m unittest discover -s /app/tests -p "test_*.py"
 ```
 
+---
+
+## Context Management
+
+- 12-turn sliding window + rolling summary per conversation.
+- Summary triggers: token threshold OR every 6 new turns.
+- `/forget` command clears all history for a chat.
+- Data retention: 90 days (configurable via `MESSAGE_RETENTION_DAYS`).
+
+---
+
+## Contracts and Runbooks
+
+| Doc | Path |
+|-----|------|
+| Websocket protocol | `docs/contracts/websocket_protocol.md` |
+| Command schema | `docs/contracts/command_schema.json` |
+| Skill catalog schema | `docs/contracts/skill_catalog_schema.json` |
+| Context/memory | `docs/contracts/context_memory.md` |
+| Pi runbook | `plans/pi-runbook.md` |
+| Architecture | `plans/NestorAI_MVP_Architecture.md` |
+
+---
+
+## Configuration Reference
+
+See [`.env.example`](.env.example) for all variables. Key groups:
+
+- **Messaging:** `PROVIDER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_*`
+- **LLM:** `OPENCLAW_LLM_PROVIDER`, `OPENAI_API_KEY`, `OPENCLAW_LLM_MODEL`
+- **Device agent:** `DEVICE_ID`, `DEVICE_TOKEN`, `CLOUD_WS_URL`
+- **Cloud:** `DATABASE_URL`, `CLOUD_SECRET_KEY`
+
+---
+
 ## Security
-Never commit `.env` or secrets. Rotate tokens if they were exposed.
+
+- Never commit `.env`. Rotate tokens if exposed.
+- `CLOUD_SECRET_KEY` is used for HMAC-SHA256 device token hashing — never store raw tokens.
+- Skill installs require SHA256 verification; mismatches block install with no partial state.
+- Device connectivity is outbound-only.

@@ -1,6 +1,6 @@
-# AGENTS.md — NestorAI Codex Operating Manual
 
-This repository uses Codex CLI. Agents must follow these rules to ship production-quality changes.
+
+This repository uses Claude Code CLI. Agents must follow these rules to ship production-quality changes.
 If instructions conflict: (1) PLAN.md (2) this file (3) local directory AGENTS.md (4) task prompt.
 
 ---
@@ -61,7 +61,7 @@ If the user asks for only code, still keep Decision Report concise, but include 
 
 ---
 
-## 4) Git / Patch Discipline (Codex CLI)
+## 4) Git / Patch Discipline (Claude Code CLI)
 
 - Keep commits logically grouped (one feature/fix per commit if possible).
 - Write commit messages that explain intent:
@@ -181,19 +181,25 @@ Prefer making progress with safe partial work rather than stalling.
 
 This section should be kept accurate. If missing, add it.
 
-### Common commands (example template)
-- Install:
-  - `<command>`
-- Run dev:
-  - `<command>`
-- Run tests (fast):
-  - `<command>`
-- Run tests (full):
-  - `<command>`
-- Lint/format/typecheck:
-  - `<command>`
-- Healthcheck:
-  - `./scripts/healthcheck.sh`
+### Common commands
+
+**Local dev (cloud LLM mode):**
+- Start stack: `docker compose up --build`
+- Start stack (local Ollama): `docker compose --profile local up --build`
+- Pi deploy: `docker compose -f docker-compose.yml -f compose-pi.yml up -d --build`
+
+**Tests:**
+- Gateway (fast): `cd gateway_service && python -m unittest discover -s tests -p "test_*.py" -v`
+- Cloud invariants: `python -m unittest discover -s cloud_service/tests -p "test_*.py" -v`
+- Device agent: `cd device_agent && python -m unittest discover -s tests -p "test_*.py" -v`
+- Inside container: `docker exec gateway-service python -m unittest discover -s /app/tests -p "test_*.py"`
+
+**Healthcheck:**
+- `./scripts/healthcheck.sh`
+
+**Cloud service:**
+- Dev: `AUTO_MIGRATE=true uvicorn cloud_service.app.main:app --port 8080`
+- Migrations: `cd cloud_service && alembic upgrade head`
 
 Agents must update this section when they introduce new workflows.
 

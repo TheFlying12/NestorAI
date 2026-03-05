@@ -1,0 +1,39 @@
+# Pi 5 overrides — apply with:
+#   docker compose -f docker-compose.yml -f compose-pi.yml up -d
+#
+# Forces linux/arm64 images and tunes memory limits for Pi 5 (8 GB model).
+# Use OPENCLAW_LLM_PROVIDER=openai (cloud LLM) for best latency on Pi.
+
+services:
+  openclaw:
+    platform: linux/arm64
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  gateway:
+    platform: linux/arm64
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  device_agent:
+    platform: linux/arm64
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # Local LLM on Pi — only if profile=local is active.
+  # Smaller model recommended for Pi 5 memory constraints.
+  ollama:
+    platform: linux/arm64
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_NUM_PARALLEL: 1
+    deploy:
+      resources:
+        limits:
+          memory: 4g

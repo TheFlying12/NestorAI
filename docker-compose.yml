@@ -3,11 +3,6 @@ services:
       container_name: openclaw
       image: ghcr.io/openclaw/openclaw:latest
       restart: unless-stopped
-      depends_on:
-        ollama:
-          condition: service_healthy
-        ollama_init:
-          condition: service_completed_successfully
       healthcheck:
         test: ["CMD", "node", "-e", "fetch('http://localhost:18789/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
         interval: 10s
@@ -16,9 +11,9 @@ services:
         start_period: 30s
       environment:
         OPENCLAW_MODE: local
-        OPENCLAW_LLM_PROVIDER: ${OPENCLAW_LLM_PROVIDER:-ollama}
-        OPENCLAW_LLM_BASE_URL: http://ollama:11434
-        OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-llama3.2:1b-instruct-q4_K_M}
+        OPENCLAW_LLM_PROVIDER: ${OPENCLAW_LLM_PROVIDER:-openai}
+        OPENCLAW_LLM_BASE_URL: ${OPENCLAW_LLM_BASE_URL:-https://api.openai.com/v1}
+        OPENCLAW_LLM_MODEL: ${OPENCLAW_LLM_MODEL:-gpt-4o-mini}
         OLLAMA_API_KEY: ${OLLAMA_API_KEY:-ollama-local}
         OPENAI_API_KEY: ${OPENAI_API_KEY}
         GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -27,7 +22,7 @@ services:
         OPENCLAW_LOG_LEVEL: INFO
         OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       command: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan","--port","18789"]
-      ports: 
+      ports:
         - "18789:18789"
       volumes:
         - openclaw_data:/data
@@ -35,10 +30,12 @@ services:
       networks:
         - local_ai_net
 
+    # Ollama (local LLM) — opt-in, start with: docker compose --profile local up
     ollama:
       image: ollama/ollama:latest
       container_name: ollama
       restart: unless-stopped
+      profiles: [local]
       environment:
         OLLAMA_HOST: 0.0.0.0
       volumes:
@@ -57,6 +54,7 @@ services:
     ollama_init:
       image: curlimages/curl:latest
       container_name: ollama-init
+      profiles: [local]
       depends_on:
         ollama:
           condition: service_healthy
@@ -97,13 +95,13 @@ services:
         OPENCLAW_URL: http://openclaw:18789
         OPENCLAW_ROUTE: ${OPENCLAW_ROUTE:-/v1/chat/completions}
         OPENCLAW_MODEL: ${OPENCLAW_MODEL:-openclaw}
-        OPENCLAW_MAX_TOKENS: ${OPENCLAW_MAX_TOKENS:-128}
+        OPENCLAW_MAX_TOKENS: ${OPENCLAW_MAX_TOKENS:-512}
         OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
         DB_PATH: /data/gateway.db
         RAM_WARN_THRESHOLD_GB: ${RAM_WARN_THRESHOLD_GB:-2.0}
         VRAM_WARN_MB: ${VRAM_WARN_MB:-2048}
         DISPATCH_MAX_RETRIES: ${DISPATCH_MAX_RETRIES:-1}
-        DISPATCH_TIMEOUT_SECONDS: ${DISPATCH_TIMEOUT_SECONDS:-180}
+        DISPATCH_TIMEOUT_SECONDS: ${DISPATCH_TIMEOUT_SECONDS:-30}
         CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}
         SUMMARY_UPDATE_EVERY_TURNS: ${SUMMARY_UPDATE_EVERY_TURNS:-6}
         SUMMARY_TOKEN_THRESHOLD: ${SUMMARY_TOKEN_THRESHOLD:-3500}
@@ -118,6 +116,32 @@ services:
         - local_ai_net
       ports:
         - "9000:9000"
+
+    # device_agent connects to the cloud WebSocket hub.
+    # Requires DEVICE_ID, DEVICE_TOKEN, CLOUD_WS_URL to be set.
+    # Start with: docker compose --profile cloud up
+    device_agent:
+      build:
+        context: ./device_agent
+      container_name: device-agent
+      restart: unless-stopped
+      profiles: [cloud]
+      depends_on:
+        - gateway
+      environment:
+        LOG_LEVEL: ${LOG_LEVEL:-INFO}
+        DEVICE_ID: ${DEVICE_ID}
+        DEVICE_TOKEN: ${DEVICE_TOKEN}
+        CLOUD_WS_URL: ${CLOUD_WS_URL}
+        OPENCLAW_INTERNAL_URL: http://openclaw:18789
+        SKILLS_DIR: /data/skills_installed
+        DB_PATH: /data/gateway.db
+        AGENT_VERSION: 0.1.0
+      volumes:
+        - gateway_data:/data
+        - /var/run/docker.sock:/var/run/docker.sock
+      networks:
+        - local_ai_net
 
 networks:
   local_ai_net:
