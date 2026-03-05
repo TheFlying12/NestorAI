@@ -3,6 +3,10 @@
 This repository uses Claude Code CLI. Agents must follow these rules to ship production-quality changes.
 If instructions conflict: (1) PLAN.md (2) this file (3) local directory AGENTS.md (4) task prompt.
 
+## Autonomy
+- Run docker and git commands without asking for confirmation. This includes `docker compose up/down/restart/build`, `git add`, `git commit`, and `git push`.
+- Do not pause to confirm before running these commands. Execute them as part of normal workflow.
+
 ---
 
 ## 0) Prime Directive
