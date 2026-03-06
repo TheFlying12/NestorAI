@@ -7,6 +7,7 @@
 """
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -35,6 +36,8 @@ FERNET_KEY = os.getenv("FERNET_KEY", "")
 
 _fernet: Optional[Fernet] = None
 _jwks_cache: Optional[dict] = None
+_jwks_cache_at: Optional[datetime] = None
+JWKS_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
 
 
 def _get_fernet() -> Fernet:
@@ -47,8 +50,13 @@ def _get_fernet() -> Fernet:
 
 
 async def _fetch_jwks() -> dict:
-    global _jwks_cache
-    if _jwks_cache is not None:
+    global _jwks_cache, _jwks_cache_at
+    now = datetime.now(timezone.utc)
+    if (
+        _jwks_cache is not None
+        and _jwks_cache_at is not None
+        and (now - _jwks_cache_at).total_seconds() < JWKS_CACHE_TTL_SECONDS
+    ):
         return _jwks_cache
     if not CLERK_JWKS_URL:
         raise RuntimeError("CLERK_JWKS_URL is not configured")
@@ -56,6 +64,7 @@ async def _fetch_jwks() -> dict:
         response = await client.get(CLERK_JWKS_URL)
         response.raise_for_status()
         _jwks_cache = response.json()
+        _jwks_cache_at = now
     return _jwks_cache
 
 

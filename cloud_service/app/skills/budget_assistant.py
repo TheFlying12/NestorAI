@@ -12,7 +12,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, func, extract
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -193,6 +193,108 @@ async def _handle_add_transaction(
     if alerts:
         reply += "\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
     return reply
+
+
+async def handle_stream(
+    user_id: str,
+    text: str,
+    context_messages: List[Dict[str, str]],
+    llm_stream,
+    db: AsyncSession,
+):
+    """Stream LLM tokens for budget assistant queries with deterministic fallback."""
+    intent = _detect_intent(text)
+    if intent == "monthly_summary":
+        async for token in _handle_summary_stream(user_id, llm_stream, db):
+            yield token
+    else:
+        async for token in _handle_add_transaction_stream(user_id, text, llm_stream, db):
+            yield token
+
+
+async def _handle_add_transaction_stream(
+    user_id: str, text: str, llm_stream, db: AsyncSession
+):
+    parsed = _parse_transaction(text)
+    if not parsed:
+        yield "I couldn't find an amount in your message. Try: 'I spent $15 at Starbucks'."
+        return
+
+    amount = parsed["amount"]
+    category = parsed["category"]
+    merchant = parsed["merchant"]
+
+    await _insert_transaction(user_id, amount, category, merchant, text, db)
+
+    now = datetime.now(timezone.utc)
+    totals = await _monthly_totals(user_id, now.year, now.month, db)
+    alerts = _check_budget_alerts(totals)
+
+    summary_line = f"Transaction logged: ${amount:.2f} in {category}"
+    if merchant:
+        summary_line += f" at {merchant}"
+
+    explain_prompt_parts = [summary_line]
+    if alerts:
+        explain_prompt_parts.append("Budget alerts: " + "; ".join(alerts))
+    explain_prompt_parts.append("Give a brief friendly confirmation (2-3 sentences).")
+
+    llm_messages = [
+        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
+        {"role": "user", "content": ". ".join(explain_prompt_parts)},
+    ]
+
+    fallback_reply = f"Logged ${amount:.2f} for {category}"
+    if merchant:
+        fallback_reply += f" at {merchant}"
+    fallback_reply += "."
+    if alerts:
+        fallback_reply += "\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
+
+    try:
+        async for token in llm_stream(llm_messages):
+            yield token
+    except Exception:
+        logger.warning("LLM stream failed for add_transaction", exc_info=True)
+        yield fallback_reply
+
+
+async def _handle_summary_stream(user_id: str, llm_stream, db: AsyncSession):
+    now = datetime.now(timezone.utc)
+    totals = await _monthly_totals(user_id, now.year, now.month, db)
+
+    if not totals:
+        yield "No transactions recorded for this month yet."
+        return
+
+    total_spent = sum(totals.values())
+    lines = [f"{cat.title()}: ${amt:.2f}" for cat, amt in totals.items()]
+    breakdown = "\n".join(lines)
+    alerts = _check_budget_alerts(totals)
+
+    explain_text = (
+        f"Monthly spending for {now.strftime('%B %Y')}:\n{breakdown}\n"
+        f"Total: ${total_spent:.2f}"
+    )
+    if alerts:
+        explain_text += "\nAlerts: " + "; ".join(alerts)
+    explain_text += "\nWrite a brief friendly 2-3 sentence summary."
+
+    llm_messages = [
+        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
+        {"role": "user", "content": explain_text},
+    ]
+
+    fallback_reply = f"Your spending for {now.strftime('%B %Y')}:\n{breakdown}\nTotal: ${total_spent:.2f}"
+    if alerts:
+        fallback_reply += "\n\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
+
+    try:
+        async for token in llm_stream(llm_messages):
+            yield token
+    except Exception:
+        logger.warning("LLM stream failed for summary", exc_info=True)
+        yield fallback_reply
 
 
 async def _handle_summary(user_id: str, llm_complete, db: AsyncSession) -> str:

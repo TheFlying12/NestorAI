@@ -6,6 +6,7 @@ import { ChatWindow } from "@/components/ChatWindow";
 import { SkillSelector, SkillId } from "@/components/SkillSelector";
 import { Message } from "@/components/MessageBubble";
 import { NestorWS, WsInbound, WsState } from "@/lib/ws";
+import { getConversationMessages } from "@/lib/api";
 
 let msgCounter = 0;
 function newId() {
@@ -15,6 +16,7 @@ function newId() {
 export default function ChatPage() {
   const { getToken } = useAuth();
   const wsRef = useRef<NestorWS | null>(null);
+  const streamingIdRef = useRef<string | null>(null);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isTyping, setIsTyping] = useState(false);
@@ -25,12 +27,42 @@ export default function ChatPage() {
   const handleWsMessage = useCallback((msg: WsInbound) => {
     if (msg.type === "typing") {
       setIsTyping(true);
+    } else if (msg.type === "token") {
+      // H1: accumulate streaming tokens into a single message bubble
+      setIsTyping(false);
+      if (!streamingIdRef.current) {
+        const id = newId();
+        streamingIdRef.current = id;
+        setMessages((prev) => [
+          ...prev,
+          { id, role: "assistant", text: msg.text, timestamp: new Date() },
+        ]);
+      } else {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === streamingIdRef.current
+              ? { ...m, text: m.text + msg.text }
+              : m
+          )
+        );
+      }
     } else if (msg.type === "reply") {
       setIsTyping(false);
-      setMessages((prev) => [
-        ...prev,
-        { id: newId(), role: "assistant", text: msg.text, timestamp: new Date() },
-      ]);
+      if (streamingIdRef.current) {
+        // Replace the accumulated streaming text with the final canonical reply
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === streamingIdRef.current ? { ...m, text: msg.text } : m
+          )
+        );
+        streamingIdRef.current = null;
+      } else {
+        // Non-streaming fallback: server sent reply without prior tokens
+        setMessages((prev) => [
+          ...prev,
+          { id: newId(), role: "assistant", text: msg.text, timestamp: new Date() },
+        ]);
+      }
     }
   }, []);
 
@@ -52,6 +84,37 @@ export default function ChatPage() {
       ws?.disconnect();
     };
   }, [getToken, handleWsMessage]);
+
+  // M5: load conversation history from DB on mount and when skill changes
+  useEffect(() => {
+    let cancelled = false;
+    streamingIdRef.current = null;
+    setMessages([]);
+
+    async function loadHistory() {
+      const token = await getToken();
+      if (!token || cancelled) return;
+      try {
+        const msgs = await getConversationMessages(token, skill);
+        if (cancelled) return;
+        setMessages(
+          msgs.map((m) => ({
+            id: newId(),
+            role: m.role as "user" | "assistant",
+            text: m.content,
+            timestamp: new Date(m.created_at),
+          }))
+        );
+      } catch {
+        // History loading is non-critical; silently skip on error
+      }
+    }
+
+    loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [skill, getToken]);
 
   // Register service worker for PWA
   useEffect(() => {

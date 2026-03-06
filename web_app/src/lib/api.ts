@@ -45,3 +45,21 @@ export async function storeApiKey(
     body: JSON.stringify({ api_key: apiKey, provider }),
   });
 }
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export async function getConversationMessages(
+  token: string,
+  skillId: string,
+  limit = 50
+): Promise<ChatMessage[]> {
+  const data = await apiFetch<{ messages: ChatMessage[] }>(
+    `/api/conversations/messages?skill_id=${encodeURIComponent(skillId)}&limit=${limit}`,
+    token
+  );
+  return data.messages;
+}

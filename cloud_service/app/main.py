@@ -7,11 +7,12 @@ Channels:
 Skill runtime and context engine are embedded in this process.
 """
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -35,9 +36,16 @@ from cloud_service.app.context import (
     maybe_update_summary,
     store_message,
 )
-from cloud_service.app.db import create_all_tables, get_db
-from cloud_service.app.models import User
+from cloud_service.app.db import AsyncSessionLocal, create_all_tables, get_db
+from cloud_service.app.models import Conversation, ConversationMessage, SkillMemory, User
 from cloud_service.app.skills import router as skill_router
+from cloud_service.app.skills.router import (
+    LLMError,
+    SYSTEM_LLM_BASE_URL,
+    SYSTEM_LLM_MODEL,
+    _make_llm_complete,
+    dispatch_stream,
+)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -56,11 +64,18 @@ TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 TELEGRAM_DEFAULT_SKILL = os.getenv("TELEGRAM_DEFAULT_SKILL", "general")
 
+TELEGRAM_SKILL_ALIASES: Dict[str, str] = {
+    "general": "general",
+    "budget": "budget_assistant",
+    "budget_assistant": "budget_assistant",
+}
+
 app = FastAPI(title="NestorAI Cloud Service", version="0.2.0")
 
-# Browser WebSocket sessions: user_id → WebSocket
-_browser_ws_sessions: Dict[str, WebSocket] = {}
+# H4: multi-tab support — set of connections per user instead of single WebSocket
+_browser_ws_sessions: Dict[str, Set[WebSocket]] = {}
 _retention_task: Optional[asyncio.Task] = None
+_system_llm = None  # M3: cached at startup
 
 
 # ─── Telegram adapter ─────────────────────────────────────────────────────────
@@ -122,58 +137,107 @@ def _parse_telegram_update(update: Dict[str, Any]) -> Optional[TelegramMessage]:
     return TelegramMessage(user_id=user_id, chat_id=chat_id, text=text)
 
 
-async def _process_telegram_message(msg: TelegramMessage, db: AsyncSession) -> None:
-    user_id = f"telegram:{msg.user_id}"
-    channel_id = msg.chat_id
-    text = msg.text
+# ─── Telegram skill preference helpers (M4) ───────────────────────────────────
 
-    result = await db.execute(select(User).where(User.user_id == user_id))
-    if result.scalar_one_or_none() is None:
-        db.add(User(user_id=user_id, auth_provider="telegram"))
-        await db.commit()
-
-    skill_id = TELEGRAM_DEFAULT_SKILL
-
-    if text.strip().lower() == "/forget":
-        conv_id = await get_or_create_conversation(user_id, "telegram", channel_id, skill_id, db)
-        await forget_conversation(conv_id, db)
-        await _telegram_send(channel_id, "Conversation history cleared.")
-        return
-
-    conv_id = await get_or_create_conversation(user_id, "telegram", channel_id, skill_id, db)
-    await store_message(conv_id, "user", text, db)
-    context_msgs = await build_context_messages(conv_id, text, db)
-
-    try:
-        reply = await skill_router.dispatch(
-            user_id=user_id,
-            text=text,
-            skill_id=skill_id,
-            context_messages=context_msgs,
-            db=db,
+async def _get_telegram_skill(user_id: str, db: AsyncSession) -> str:
+    result = await db.execute(
+        select(SkillMemory).where(
+            SkillMemory.user_id == user_id,
+            SkillMemory.skill_id == "telegram",
+            SkillMemory.key == "preferred_skill",
         )
-    except Exception:
-        logger.exception("Skill dispatch failed for telegram user=%s", user_id)
-        reply = "Something went wrong. Please try again shortly."
-
-    await store_message(conv_id, "assistant", reply, db)
-
-    try:
-        await _telegram_send(channel_id, reply)
-    except httpx.HTTPError:
-        logger.exception("Failed to send Telegram reply chat_id=%s", channel_id)
-
-    asyncio.create_task(maybe_update_summary(conv_id, _system_llm_complete(), db))
+    )
+    row = result.scalar_one_or_none()
+    if row:
+        return json.loads(row.value_json)
+    return TELEGRAM_DEFAULT_SKILL
 
 
-def _system_llm_complete():
-    from cloud_service.app.skills.router import _make_llm_complete, SYSTEM_LLM_MODEL, SYSTEM_LLM_BASE_URL
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        async def _noop(messages):
-            return ""
-        return _noop
-    return _make_llm_complete(api_key, SYSTEM_LLM_MODEL, SYSTEM_LLM_BASE_URL)
+async def _set_telegram_skill(user_id: str, skill_id: str, db: AsyncSession) -> None:
+    result = await db.execute(
+        select(SkillMemory).where(
+            SkillMemory.user_id == user_id,
+            SkillMemory.skill_id == "telegram",
+            SkillMemory.key == "preferred_skill",
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row:
+        row.value_json = json.dumps(skill_id)
+    else:
+        db.add(SkillMemory(
+            user_id=user_id,
+            skill_id="telegram",
+            key="preferred_skill",
+            value_json=json.dumps(skill_id),
+        ))
+    await db.commit()
+
+
+# M2: fresh DB session created per background task (no request-scoped db arg)
+async def _process_telegram_message(msg: TelegramMessage) -> None:
+    async with AsyncSessionLocal() as db:
+        user_id = f"telegram:{msg.user_id}"
+        channel_id = msg.chat_id
+        text = msg.text
+
+        result = await db.execute(select(User).where(User.user_id == user_id))
+        if result.scalar_one_or_none() is None:
+            db.add(User(user_id=user_id, auth_provider="telegram"))
+            await db.commit()
+
+        # Handle /skills command
+        if text.strip().lower() == "/skills":
+            skills_list = "\n".join(f"\u2022 {k}" for k in TELEGRAM_SKILL_ALIASES.keys())
+            await _telegram_send(channel_id, f"Available skills:\n{skills_list}")
+            return
+
+        # Handle /skill <name> command
+        if text.strip().lower().startswith("/skill"):
+            parts = text.strip().split(maxsplit=1)
+            requested = parts[1].strip().lower() if len(parts) > 1 else ""
+            resolved = TELEGRAM_SKILL_ALIASES.get(requested)
+            if resolved:
+                await _set_telegram_skill(user_id, resolved, db)
+                await _telegram_send(channel_id, f"Switched to skill: {resolved}")
+            else:
+                skills_list = ", ".join(TELEGRAM_SKILL_ALIASES.keys())
+                await _telegram_send(channel_id, f"Unknown skill. Available: {skills_list}")
+            return
+
+        skill_id = await _get_telegram_skill(user_id, db)
+
+        if text.strip().lower() == "/forget":
+            conv_id = await get_or_create_conversation(user_id, "telegram", channel_id, skill_id, db)
+            await forget_conversation(conv_id, db)
+            await _telegram_send(channel_id, "Conversation history cleared.")
+            return
+
+        conv_id = await get_or_create_conversation(user_id, "telegram", channel_id, skill_id, db)
+        await store_message(conv_id, "user", text, db)
+        context_msgs = await build_context_messages(conv_id, text, db)
+
+        try:
+            reply = await skill_router.dispatch(
+                user_id=user_id,
+                text=text,
+                skill_id=skill_id,
+                context_messages=context_msgs,
+                db=db,
+            )
+        except Exception:
+            logger.exception("Skill dispatch failed for telegram user=%s", user_id)
+            reply = "Something went wrong. Please try again shortly."
+
+        await store_message(conv_id, "assistant", reply, db)
+
+        try:
+            await _telegram_send(channel_id, reply)
+        except httpx.HTTPError:
+            logger.exception("Failed to send Telegram reply chat_id=%s", channel_id)
+
+        # Await directly — we're already in a background task, db is still open
+        await maybe_update_summary(conv_id, _system_llm, db)
 
 
 # ─── Startup / Shutdown ────────────────────────────────────────────────────────
@@ -190,7 +254,7 @@ async def _retention_worker(db_factory) -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _retention_task
+    global _retention_task, _system_llm
 
     if os.getenv("AUTO_MIGRATE", "false").lower() == "true":
         await create_all_tables()
@@ -198,7 +262,15 @@ async def startup() -> None:
 
     await _telegram_configure_webhook()
 
-    from cloud_service.app.db import AsyncSessionLocal
+    # M3: cache system LLM callable once at startup rather than rebuilding per message
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key:
+        _system_llm = _make_llm_complete(api_key, SYSTEM_LLM_MODEL, SYSTEM_LLM_BASE_URL)
+    else:
+        async def _noop(messages):
+            return ""
+        _system_llm = _noop
+
     _retention_task = asyncio.create_task(_retention_worker(AsyncSessionLocal))
 
     logger.info("Cloud service started v0.2.0")
@@ -223,7 +295,7 @@ async def health() -> Dict[str, Any]:
         "status": "ok",
         "service": "cloud",
         "version": "0.2.0",
-        "connected_browsers": len(_browser_ws_sessions),
+        "connected_browsers": sum(len(v) for v in _browser_ws_sessions.values()),
         "telegram_enabled": bool(TELEGRAM_BOT_TOKEN),
     }
 
@@ -240,7 +312,6 @@ app.get("/api/auth/me", response_model=MeResponse)(get_me)
 async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
-    db: AsyncSession = Depends(get_db),
 ) -> Dict[str, str]:
     if TELEGRAM_WEBHOOK_SECRET and x_telegram_bot_api_secret_token != TELEGRAM_WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
@@ -251,8 +322,44 @@ async def telegram_webhook(
         return {"status": "ignored", "reason": "no_message"}
 
     logger.info("Telegram message user=%s chat=%s", msg.user_id, msg.chat_id)
-    asyncio.create_task(_process_telegram_message(msg, db))
+    asyncio.create_task(_process_telegram_message(msg))
     return {"status": "accepted"}
+
+
+# ─── Conversation history endpoint (M5) ───────────────────────────────────────
+
+@app.get("/api/conversations/messages")
+async def get_conversation_messages(
+    skill_id: str = "general",
+    limit: int = 50,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.user_id == user_id,
+            Conversation.channel == "web",
+            Conversation.skill_id == skill_id,
+        )
+    )
+    convo = result.scalar_one_or_none()
+    if not convo:
+        return {"messages": []}
+
+    result = await db.execute(
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == convo.conversation_id)
+        .order_by(ConversationMessage.id.desc())
+        .limit(limit)
+    )
+    msgs = result.scalars().all()
+    return {
+        "messages": [
+            {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+            for m in reversed(msgs)
+            if m.role in ("user", "assistant")
+        ]
+    }
 
 
 # ─── Browser WebSocket chat ────────────────────────────────────────────────────
@@ -264,7 +371,8 @@ async def browser_chat(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await websocket.accept()
-    _browser_ws_sessions[user_id] = websocket
+    # H4: support multiple tabs — store all connections for this user in a set
+    _browser_ws_sessions.setdefault(user_id, set()).add(websocket)
     logger.info("Browser WebSocket connected user_id=%s", user_id)
 
     try:
@@ -302,26 +410,39 @@ async def browser_chat(
             await store_message(conv_id, "user", text, db)
             context_msgs = await build_context_messages(conv_id, text, db)
 
+            # H1: stream tokens to client as they arrive
+            accumulated: List[str] = []
             try:
-                reply = await skill_router.dispatch(
+                async for token in dispatch_stream(
                     user_id=user_id,
                     text=text,
                     skill_id=skill_id,
                     context_messages=context_msgs,
                     db=db,
-                )
+                ):
+                    accumulated.append(token)
+                    await websocket.send_json({"type": "token", "text": token})
+            except LLMError as exc:
+                accumulated = [str(exc)]
+                await websocket.send_json({"type": "token", "text": str(exc)})
             except Exception:
-                logger.exception("Skill dispatch failed user_id=%s", user_id)
-                reply = "Something went wrong. Please try again."
+                logger.exception("Skill dispatch_stream failed user_id=%s", user_id)
+                accumulated = ["Something went wrong. Please try again."]
+                await websocket.send_json({"type": "token", "text": accumulated[0]})
 
-            await store_message(conv_id, "assistant", reply, db)
-            await websocket.send_json({"type": "reply", "text": reply})
+            full_reply = "".join(accumulated)
+            await store_message(conv_id, "assistant", full_reply, db)
+            await websocket.send_json({"type": "reply", "text": full_reply})
 
-            asyncio.create_task(maybe_update_summary(conv_id, _system_llm_complete(), db))
+            asyncio.create_task(maybe_update_summary(conv_id, _system_llm, db))
 
     except WebSocketDisconnect:
         logger.info("Browser WebSocket disconnected user_id=%s", user_id)
     except Exception:
         logger.exception("Browser WebSocket error user_id=%s", user_id)
     finally:
-        _browser_ws_sessions.pop(user_id, None)
+        # H4: remove only this connection, not all connections for this user
+        sessions = _browser_ws_sessions.get(user_id, set())
+        sessions.discard(websocket)
+        if not sessions:
+            _browser_ws_sessions.pop(user_id, None)

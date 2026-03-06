@@ -10,6 +10,7 @@
 
 export type WsInbound =
   | { type: "reply"; text: string }
+  | { type: "token"; text: string }
   | { type: "typing" }
   | { type: "pong" };
 

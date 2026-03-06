@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -129,9 +129,11 @@ async def _fetch_recent_turns(
 
 async def _count_turns(conversation_id: str, db: AsyncSession) -> int:
     result = await db.execute(
-        select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
+        select(func.count()).select_from(ConversationMessage).where(
+            ConversationMessage.conversation_id == conversation_id
+        )
     )
-    return len(result.scalars().all())
+    return result.scalar_one()
 
 
 async def build_context_messages(
