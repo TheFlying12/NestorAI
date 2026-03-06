@@ -7,12 +7,10 @@
 
 ## 1. System Overview
 
-NestorAI is a personal AI assistant that routes natural-language messages through a skill runtime to produce structured, actionable replies. The cloud-only architecture serves two channels:
+NestorAI is a personal AI assistant that routes natural-language messages through a skill runtime to produce structured, actionable replies. Two channels are supported:
 
 - **Web chat** — Browser WebSocket → cloud FastAPI
 - **Telegram** — Telegram webhook → cloud FastAPI
-
-A third optional path exists for Pi power users (device agent → cloud WebSocket), preserved for backward compatibility but not required.
 
 ---
 
@@ -80,12 +78,7 @@ A third optional path exists for Pi power users (device agent → cloud WebSocke
 │ summaries│
 │ txns     │
 │ skill_mem│
-│ devices  │
 └──────────┘
-
-OPTIONAL — Pi Power User Path:
-  [Pi device_agent] ──WSS──▶ /devices/connect (cloud)
-                              (same FastAPI process, preserved from Phase 1)
 ```
 
 ---
@@ -283,12 +276,6 @@ skill_memories
   skill_id, user_id (FK → users), key
   value_json          — arbitrary JSON blob
   UNIQUE(skill_id, user_id, key)
-
-devices              (Phase 1 — preserved)
-  device_id (PK)
-  user_id (FK nullable → users)
-  device_token_hash, owner_id, factory_secret_hash
-  last_seen, installed_skills
 ```
 
 ---
@@ -337,8 +324,6 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 | Clerk JWT forgery | RS256 verification via cached JWKS; `sub` claim required |
 | SQL injection | SQLAlchemy ORM — parameterized queries only |
 | Secrets in logs | No logging of token values, API keys, or webhook payloads |
-| Device token compromise | HMAC-SHA256 stored hash; never stored raw |
-| SSRF via OPENCLAW_URL | Removed from cloud path entirely |
 | Multi-tenant data isolation | All queries WHERE user_id = :current_user_id |
 
 ---
@@ -347,7 +332,7 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 
 **Current (MVP):**
 - Structured logs via Python logging: component, user_id (not token), event type
-- `/health` endpoint: connected devices, connected browsers, Telegram status
+- `/health` endpoint: connected browser sessions, Telegram enabled status
 - FastAPI auto-generated OpenAPI docs at `/docs` (disable in prod)
 
 **Planned:**
@@ -363,8 +348,7 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 2. All LLM calls are to OpenAI-compatible APIs; no streaming (SSE) in first version.
 3. Telegram is the primary mobile channel; PWA covers web. Native apps deferred.
 4. Users are trusted with their own API keys; no rate limiting on LLM calls per user yet.
-5. Device agent (Pi) remains functional but is not the primary user path.
-6. Conversation isolation is by `(user_id, channel, channel_id, skill_id)` — intentional. A user's Telegram conversation is separate from their web conversation.
+5. Conversation isolation is by `(user_id, channel, channel_id, skill_id)` — intentional. A user's Telegram conversation is separate from their web conversation.
 
 ---
 
@@ -378,5 +362,5 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 | Native iOS/Android | Low | 50-100 active users with identified mobile use cases |
 | Rate limiting per user (LLM calls) | Medium | First abuse incident |
 | Streaming LLM responses (SSE) | Medium | User requests faster perceived latency |
-| WhatsApp channel in cloud service | Low | Business account approved |
-| Skill catalog API for dynamic install | Low | Phase 3 |
+| WhatsApp channel | Low | Business account approved |
+| Additional skills | Low | User demand |

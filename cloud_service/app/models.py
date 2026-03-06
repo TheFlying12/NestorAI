@@ -9,67 +9,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ─── Device management (Phase 1, preserved) ───────────────────────────────────
-
-class Device(Base):
-    __tablename__ = "devices"
-
-    device_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    device_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    factory_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Nullable FK to users.user_id — populated after cloud auth exists.
-    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
-    )
-    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    installed_skills: Mapped[str] = mapped_column(Text, nullable=False, default="")
-
-
-class PairingCode(Base):
-    __tablename__ = "pairing_codes"
-
-    code: Mapped[str] = mapped_column(String(32), primary_key=True)
-    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
-    )
-
-
-class Command(Base):
-    __tablename__ = "commands"
-
-    command_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[str] = mapped_column(Text, nullable=False)
-    # Statuses: pending | received | running | succeeded | failed | expired
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
-    )
-
-
-class TransferNonce(Base):
-    __tablename__ = "transfer_nonces"
-
-    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
-    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    new_owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
-    )
-
-
-# ─── Cloud-only schema (Phase 2) ──────────────────────────────────────────────
-
 class User(Base):
     """Maps Clerk user IDs to our DB; stores encrypted LLM API key."""
     __tablename__ = "users"
@@ -96,7 +35,7 @@ class Conversation(Base):
     )
     # "telegram" | "web" | "whatsapp"
     channel: Mapped[str] = mapped_column(String(32), nullable=False, default="web")
-    # Channel-specific ID: Telegram chat_id, browser session id, etc.
+    # Channel-specific ID: Telegram chat_id, browser session user_id, etc.
     channel_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     skill_id: Mapped[str] = mapped_column(String(64), nullable=False, default="general")
     created_at: Mapped[datetime] = mapped_column(

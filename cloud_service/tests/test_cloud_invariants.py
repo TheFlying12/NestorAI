@@ -1,117 +1,183 @@
 """Unit tests for cloud_service invariants."""
-import hashlib
-import hmac
 import os
-import secrets
+import sys
+import types
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-# Minimal env so modules import cleanly without a real DB.
+# ── Stub out heavy DB/async dependencies so tests run without asyncpg ──────────
+# Must happen BEFORE any cloud_service imports.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
-os.environ.setdefault("CLOUD_SECRET_KEY", "test_secret_key_for_unit_tests")
+os.environ.setdefault("FERNET_KEY", "")
+
+# Stub db and models so create_async_engine is never called and Python 3.9
+# doesn't choke on `str | None` union syntax in models.py.
+_db_stub = types.ModuleType("cloud_service.app.db")
+_db_stub.Base = MagicMock()             # type: ignore
+_db_stub.get_db = MagicMock()           # type: ignore
+_db_stub.create_all_tables = MagicMock()  # type: ignore
+_db_stub.AsyncSessionLocal = MagicMock()  # type: ignore
+sys.modules["cloud_service.app.db"] = _db_stub
+
+_models_stub = types.ModuleType("cloud_service.app.models")
+_models_stub.Transaction = MagicMock()   # type: ignore
+_models_stub.User = MagicMock()          # type: ignore
+_models_stub.Conversation = MagicMock()  # type: ignore
+_models_stub.ConversationMessage = MagicMock()   # type: ignore
+_models_stub.ConversationSummary = MagicMock()   # type: ignore
+_models_stub.SkillMemory = MagicMock()   # type: ignore
+sys.modules["cloud_service.app.models"] = _models_stub
 
 
-class TestTokenHashing(unittest.TestCase):
-    """Device tokens are stored as HMAC-SHA256 hashes; never plaintext."""
+class TestContextWindowConfig(unittest.TestCase):
+    """Context engine configuration invariants."""
 
-    def _hash(self, value: str) -> str:
-        key = "test_secret_key_for_unit_tests"
-        return hmac.new(key.encode(), value.encode(), hashlib.sha256).hexdigest()
+    def test_default_window_is_12_turns(self):
+        window = int(os.getenv("CONTEXT_WINDOW_TURNS", "12"))
+        self.assertEqual(window, 12)
 
-    def test_hash_is_64_hex_chars(self):
-        h = self._hash("some_raw_token")
-        self.assertEqual(len(h), 64)
-        self.assertTrue(all(c in "0123456789abcdef" for c in h))
+    def test_summary_triggers_before_threshold(self):
+        turns_since_summary = 7
+        update_every = int(os.getenv("SUMMARY_UPDATE_EVERY_TURNS", "6"))
+        self.assertGreaterEqual(turns_since_summary, update_every)
 
-    def test_different_tokens_different_hashes(self):
-        h1 = self._hash("token_a")
-        h2 = self._hash("token_b")
-        self.assertNotEqual(h1, h2)
-
-    def test_verify_uses_constant_time_compare(self):
-        raw = secrets.token_hex(32)
-        h = self._hash(raw)
-        # Verify: correct token passes
-        self.assertTrue(hmac.compare_digest(self._hash(raw), h))
-        # Verify: wrong token fails
-        self.assertFalse(hmac.compare_digest(self._hash("wrong"), h))
+    def test_summary_does_not_trigger_below_threshold(self):
+        turns_since_summary = 3
+        update_every = int(os.getenv("SUMMARY_UPDATE_EVERY_TURNS", "6"))
+        self.assertLess(turns_since_summary, update_every)
 
 
-class TestPairingCodeExpiry(unittest.TestCase):
-    """Pairing codes must be rejected when expired or already used."""
+class TestBudgetCategorizer(unittest.TestCase):
+    """Budget Assistant deterministic categorization."""
 
-    def _make_code(self, used: bool, expired: bool):
-        from unittest.mock import MagicMock
-        code = MagicMock()
-        code.used = used
-        code.expires_at = (
-            datetime.now(timezone.utc) - timedelta(hours=1)
-            if expired
-            else datetime.now(timezone.utc) + timedelta(hours=24)
-        )
-        return code
+    def _categorize(self, text: str) -> str:
+        from cloud_service.app.skills.budget_assistant import _categorize
+        return _categorize(text)
 
-    def test_unused_valid_code_passes(self):
-        code = self._make_code(used=False, expired=False)
-        now = datetime.now(timezone.utc)
-        expires = code.expires_at.replace(tzinfo=timezone.utc)
-        self.assertFalse(code.used)
-        self.assertGreater(expires, now)
+    def test_starbucks_is_food(self):
+        self.assertEqual(self._categorize("coffee at starbucks"), "food")
 
-    def test_used_code_is_rejected(self):
-        code = self._make_code(used=True, expired=False)
-        self.assertTrue(code.used)
+    def test_uber_is_transport(self):
+        self.assertEqual(self._categorize("uber ride downtown"), "transport")
 
-    def test_expired_code_is_rejected(self):
-        code = self._make_code(used=False, expired=True)
-        now = datetime.now(timezone.utc)
-        expires = code.expires_at.replace(tzinfo=timezone.utc)
-        self.assertLess(expires, now)
+    def test_netflix_is_entertainment(self):
+        self.assertEqual(self._categorize("netflix subscription"), "entertainment")
+
+    def test_electric_bill_is_utilities(self):
+        self.assertEqual(self._categorize("electric bill payment"), "utilities")
+
+    def test_unknown_is_other(self):
+        self.assertEqual(self._categorize("random unknown vendor xyz"), "other")
 
 
-class TestCommandExpiry(unittest.TestCase):
-    """Commands past TTL are marked expired and not retried."""
+class TestTransactionParser(unittest.TestCase):
+    """Budget Assistant transaction parsing from natural language."""
 
-    def test_command_within_ttl_is_valid(self):
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(hours=1)
-        self.assertGreater(expires_at, now)
+    def _parse(self, text: str):
+        from cloud_service.app.skills.budget_assistant import _parse_transaction
+        return _parse_transaction(text)
 
-    def test_command_past_ttl_is_expired(self):
-        now = datetime.now(timezone.utc)
-        expires_at = now - timedelta(hours=1)
-        self.assertLess(expires_at, now)
+    def test_parses_dollar_amount(self):
+        result = self._parse("I spent $45 at Whole Foods")
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["amount"], 45.0)
 
+    def test_parses_merchant_name(self):
+        result = self._parse("paid $12 at Starbucks")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["merchant"], "Starbucks")
 
-class TestDeviceTokenFormat(unittest.TestCase):
-    """Device token format: '{device_id}:{raw_token}'."""
+    def test_returns_none_with_no_amount(self):
+        result = self._parse("I went to the store today")
+        self.assertIsNone(result)
 
-    def test_token_split_extracts_device_id(self):
-        device_id = "dev_abc123"
-        raw = secrets.token_hex(32)
-        token = f"{device_id}:{raw}"
-        parts = token.split(":", 1)
-        self.assertEqual(len(parts), 2)
-        self.assertEqual(parts[0], device_id)
-        self.assertEqual(parts[1], raw)
-
-    def test_malformed_token_has_no_colon(self):
-        token = "no_colon_in_here"
-        parts = token.split(":", 1)
-        self.assertEqual(len(parts), 1)
+    def test_parses_decimal_amount(self):
+        result = self._parse("spent $9.99 on Spotify")
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["amount"], 9.99)
 
 
-class TestTransferNonceExpiry(unittest.TestCase):
-    """Transfer nonces expire after TRANSFER_NONCE_TTL_MINUTES."""
+class TestBudgetAlerts(unittest.TestCase):
+    """Budget alert thresholds fire at correct levels."""
 
-    def test_fresh_nonce_is_valid(self):
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-        self.assertGreater(expires_at, datetime.now(timezone.utc))
+    def _alerts(self, totals):
+        from cloud_service.app.skills.budget_assistant import _check_budget_alerts
+        return _check_budget_alerts(totals)
 
-    def test_old_nonce_is_expired(self):
-        expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-        self.assertLess(expires_at, datetime.now(timezone.utc))
+    def test_over_budget_triggers_alert(self):
+        alerts = self._alerts({"food": 500.0})  # default budget 400
+        self.assertTrue(any("food" in a.lower() or "Food" in a for a in alerts))
+
+    def test_80_pct_triggers_warning(self):
+        alerts = self._alerts({"food": 340.0})  # 85% of 400
+        self.assertTrue(any("Food" in a or "food" in a for a in alerts))
+
+    def test_under_threshold_no_alert(self):
+        alerts = self._alerts({"food": 100.0})  # 25% of 400
+        food_alerts = [a for a in alerts if "Food" in a or "food" in a]
+        self.assertEqual(food_alerts, [])
+
+
+class TestFernetKeyValidation(unittest.TestCase):
+    """Fernet encryption round-trips correctly."""
+
+    def test_encrypt_decrypt_roundtrip(self):
+        from cryptography.fernet import Fernet
+        key = Fernet.generate_key().decode()
+        os.environ["FERNET_KEY"] = key
+
+        # Reset cached _fernet so it picks up the new key
+        import cloud_service.app.auth as auth_module
+        auth_module._fernet = None
+
+        try:
+            from cloud_service.app.auth import encrypt_api_key, decrypt_api_key
+            original = "sk-test-abc123"
+            encrypted = encrypt_api_key(original)
+            self.assertNotEqual(encrypted, original)
+            decrypted = decrypt_api_key(encrypted)
+            self.assertEqual(decrypted, original)
+        finally:
+            auth_module._fernet = None
+            del os.environ["FERNET_KEY"]
+
+    def test_decrypt_fails_on_garbage(self):
+        from cryptography.fernet import Fernet
+        key = Fernet.generate_key().decode()
+        os.environ["FERNET_KEY"] = key
+
+        import cloud_service.app.auth as auth_module
+        auth_module._fernet = None
+
+        try:
+            from cloud_service.app.auth import decrypt_api_key
+            with self.assertRaises(ValueError):
+                decrypt_api_key("not-a-valid-fernet-token")
+        finally:
+            auth_module._fernet = None
+            del os.environ["FERNET_KEY"]
+
+
+class TestRetentionCutoff(unittest.TestCase):
+    """Message retention cutoff is calculated correctly."""
+
+    def test_cutoff_is_in_the_past(self):
+        retention_days = int(os.getenv("MESSAGE_RETENTION_DAYS", "90"))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        self.assertLess(cutoff, datetime.now(timezone.utc))
+
+    def test_recent_message_survives(self):
+        retention_days = 90
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        recent = datetime.now(timezone.utc) - timedelta(days=1)
+        self.assertGreater(recent, cutoff)
+
+    def test_old_message_is_pruned(self):
+        retention_days = 90
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        old = datetime.now(timezone.utc) - timedelta(days=100)
+        self.assertLess(old, cutoff)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,8 @@
-"""Initial schema: devices, pairing_codes, commands, transfer_nonces
+"""Cloud-only initial schema.
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-03-04
-
+Create Date: 2026-03-05
 """
 from typing import Sequence, Union
 from alembic import op
@@ -16,55 +15,113 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ── users ────────────────────────────────────────────────────────────────
     op.create_table(
-        "devices",
-        sa.Column("device_id", sa.String(64), primary_key=True),
-        sa.Column("device_token_hash", sa.String(64), nullable=False),
-        sa.Column("owner_id", sa.String(64), nullable=False),
-        sa.Column("factory_secret_hash", sa.String(64), nullable=False),
+        "users",
+        sa.Column("user_id", sa.String(128), primary_key=True),
+        sa.Column("email", sa.String(255), unique=True, nullable=True),
+        sa.Column("auth_provider", sa.String(32), nullable=False, server_default="clerk"),
+        sa.Column("api_key_encrypted", sa.Text, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("last_seen", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("installed_skills", sa.Text, nullable=False, server_default=""),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
 
+    # ── conversations ─────────────────────────────────────────────────────────
     op.create_table(
-        "pairing_codes",
-        sa.Column("code", sa.String(32), primary_key=True),
-        sa.Column("device_id", sa.String(64), nullable=False),
-        sa.Column("used", sa.Boolean, nullable=False, server_default=sa.false()),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        "conversations",
+        sa.Column("conversation_id", sa.String(64), primary_key=True),
+        sa.Column(
+            "user_id",
+            sa.String(128),
+            sa.ForeignKey("users.user_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("channel", sa.String(32), nullable=False, server_default="web"),
+        sa.Column("channel_id", sa.String(128), nullable=False, server_default=""),
+        sa.Column("skill_id", sa.String(64), nullable=False, server_default="general"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
+    op.create_index("ix_conversations_user_id", "conversations", ["user_id"])
 
+    # ── conversation_messages ─────────────────────────────────────────────────
     op.create_table(
-        "commands",
-        sa.Column("command_id", sa.String(64), primary_key=True),
-        sa.Column("idempotency_key", sa.String(128), nullable=False),
-        sa.Column("device_id", sa.String(64), nullable=False),
-        sa.Column("type", sa.String(64), nullable=False),
-        sa.Column("payload", sa.Text, nullable=False),
-        sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        "conversation_messages",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column(
+            "conversation_id",
+            sa.String(64),
+            sa.ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("role", sa.String(16), nullable=False),
+        sa.Column("content", sa.Text, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
-    op.create_index("ix_commands_device_id", "commands", ["device_id"])
-    op.create_index("ix_commands_idempotency_key", "commands", ["idempotency_key"])
+    op.create_index("ix_conv_messages_conversation_id", "conversation_messages", ["conversation_id"])
 
+    # ── conversation_summaries ────────────────────────────────────────────────
     op.create_table(
-        "transfer_nonces",
-        sa.Column("nonce", sa.String(64), primary_key=True),
-        sa.Column("device_id", sa.String(64), nullable=False),
-        sa.Column("new_owner_id", sa.String(64), nullable=False),
-        sa.Column("used", sa.Boolean, nullable=False, server_default=sa.false()),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        "conversation_summaries",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column(
+            "conversation_id",
+            sa.String(64),
+            sa.ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+        ),
+        sa.Column("summary_text", sa.Text, nullable=False),
+        sa.Column("turn_count", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("token_estimate", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+    )
+
+    # ── transactions ──────────────────────────────────────────────────────────
+    op.create_table(
+        "transactions",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column(
+            "user_id",
+            sa.String(128),
+            sa.ForeignKey("users.user_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("amount", sa.Numeric(12, 2), nullable=False),
+        sa.Column("category", sa.String(64), nullable=False),
+        sa.Column("merchant", sa.String(128), nullable=False, server_default=""),
+        sa.Column("note", sa.Text, nullable=False, server_default=""),
+        sa.Column("currency", sa.String(8), nullable=False, server_default="USD"),
+        sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+    )
+    op.create_index("ix_transactions_user_id", "transactions", ["user_id"])
+
+    # ── skill_memories ────────────────────────────────────────────────────────
+    op.create_table(
+        "skill_memories",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("skill_id", sa.String(64), nullable=False),
+        sa.Column(
+            "user_id",
+            sa.String(128),
+            sa.ForeignKey("users.user_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("key", sa.String(128), nullable=False),
+        sa.Column("value_json", sa.Text, nullable=False, server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("skill_id", "user_id", "key", name="uq_skill_memory"),
     )
 
 
 def downgrade() -> None:
-    op.drop_table("transfer_nonces")
-    op.drop_index("ix_commands_idempotency_key", "commands")
-    op.drop_index("ix_commands_device_id", "commands")
-    op.drop_table("commands")
-    op.drop_table("pairing_codes")
-    op.drop_table("devices")
+    op.drop_table("skill_memories")
+    op.drop_index("ix_transactions_user_id", "transactions")
+    op.drop_table("transactions")
+    op.drop_table("conversation_summaries")
+    op.drop_index("ix_conv_messages_conversation_id", "conversation_messages")
+    op.drop_table("conversation_messages")
+    op.drop_index("ix_conversations_user_id", "conversations")
+    op.drop_table("conversations")
+    op.drop_table("users")
