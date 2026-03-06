@@ -1,22 +1,41 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: nestor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nestor
+      POSTGRES_PASSWORD: nestor
+      POSTGRES_DB: nestordb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestor -d nestordb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   cloud:
     build:
       context: ./cloud_service
     container_name: nestor-cloud
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: postgresql+asyncpg://nestor:nestor@db:5432/nestordb
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.0-flash}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
       MVP_USER_ID: ${MVP_USER_ID:-local}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}
       SUMMARY_UPDATE_EVERY_TURNS: ${SUMMARY_UPDATE_EVERY_TURNS:-6}
       ENABLE_CONTEXT_SUMMARY: ${ENABLE_CONTEXT_SUMMARY:-true}
       MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS:-90}
       SKILL_BUDGETS: ${SKILL_BUDGETS:-{}}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
+      AUTO_MIGRATE: "true"
     ports:
       - "8080:8080"
     healthcheck:
@@ -25,3 +44,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+volumes:
+  postgres_data:
