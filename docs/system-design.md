@@ -1,16 +1,13 @@
 # NestorAI — System Design & Technology Tradeoffs
 
 **Audience:** Senior engineers, future maintainers, investors with technical backgrounds.
-**Status:** Phase 2 — Cloud-Only Architecture (as of 2026-03-05)
+**Status:** Phase 2 — Cloud-Only, Web-First Architecture (as of 2026-03-06)
 
 ---
 
 ## 1. System Overview
 
-NestorAI is a personal AI assistant that routes natural-language messages through a skill runtime to produce structured, actionable replies. Two channels are supported:
-
-- **Web chat** — Browser WebSocket → cloud FastAPI
-- **Telegram** — Telegram webhook → cloud FastAPI
+NestorAI is a personal AI assistant that routes natural-language messages through a skill runtime to produce structured, actionable replies. The sole input channel is the web app — a Next.js PWA connected over a persistent WebSocket.
 
 ---
 
@@ -18,26 +15,28 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  USER CLIENTS                                                      │
+│  USER CLIENT                                                       │
 │                                                                    │
-│  Browser (Next.js PWA)          Telegram Mobile App               │
-│  ┌─────────────────────┐        ┌──────────────────────┐          │
-│  │  /chat page          │        │  @YourBot            │          │
-│  │  Clerk auth          │        │  (native Telegram)   │          │
-│  │  WebSocket client    │        │                      │          │
-│  └──────────┬───────────┘        └──────────┬───────────┘          │
-│             │ WSS /chat?token=   │ POST /webhook/telegram           │
-└─────────────┼────────────────────┼──────────────────────────────────┘
-              │                    │
-              ▼                    ▼
+│  Browser (Next.js PWA)                                            │
+│  ┌─────────────────────────────────────────────────────────────┐  │
+│  │  /chat page                                                   │  │
+│  │  Clerk auth + skill selector                                  │  │
+│  │  WebSocket client (streaming token accumulation)             │  │
+│  │  History loaded from REST on mount / skill change            │  │
+│  └──────────────────────────┬───────────────────────────────────┘  │
+│                              │ WSS /chat?token=<clerk-jwt>          │
+│                              │ GET /api/conversations/messages      │
+└──────────────────────────────┼───────────────────────────────────-─┘
+                               │
+                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  CLOUD API  (FastAPI — Railway)                                        │
 │                                                                        │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
 │  │  Auth Layer (auth.py)                                            │  │
-│  │  • Clerk JWT → JWKS verification                                 │  │
-│  │  • get_current_user() dependency                                 │  │
-│  │  • Fernet-encrypted per-user API key storage                     │  │
+│  │  • Clerk JWT → JWKS verification (6h TTL cache)                 │  │
+│  │  • get_current_user() / get_current_user_ws() dependencies      │  │
+│  │  • Fernet-encrypted per-user API key storage                    │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                             │  user_id                                  │
 │  ┌──────────────────────────▼──────────────────────────────────────┐  │
@@ -45,24 +44,27 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 │  │  • get_or_create_conversation()                                   │  │
 │  │  • store_message()                                                │  │
 │  │  • build_context_messages() → 12-turn window + rolling summary   │  │
-│  │  • maybe_update_summary() → LLM summarization (async, bg task)   │  │
+│  │  • maybe_update_summary() → LLM summarization (async bg task)   │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                             │  context_messages[]                       │
 │  ┌──────────────────────────▼──────────────────────────────────────┐  │
 │  │  Skill Router (skills/router.py)                                  │  │
-│  │  • dispatch(user_id, text, skill_id, context, db)                │  │
+│  │  • dispatch_stream(user_id, text, skill_id, context, db)         │  │
 │  │  • Resolves user LLM API key (Fernet decrypt) or system fallback │  │
+│  │  • LLMError classification: 401 → auth msg, 429 → rate-limit,   │  │
+│  │    5xx → unavailable                                             │  │
 │  │  • Routes to:                                                     │  │
-│  │    ├── general.py      → LLM pass-through                        │  │
+│  │    ├── general.py      → LLM stream pass-through                 │  │
 │  │    └── budget_assistant.py → deterministic parse → PostgreSQL    │  │
-│  │                             → LLM for explanation only           │  │
+│  │                             → LLM stream for explanation         │  │
+│  │                             → deterministic fallback if LLM down │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
-│                             │                                           │
+│                             │  token stream (SSE-style over WS)        │
 │  ┌──────────────────────────▼──────────────────────────────────────┐  │
-│  │  LLM API (OpenAI / Gemini — BYOK)                                │  │
+│  │  LLM API (OpenAI-compatible — BYOK)                              │  │
 │  │  • User's key from Fernet-encrypted DB column                    │  │
 │  │  • Fallback: OPENAI_API_KEY env var (demo/admin)                 │  │
-│  │  • httpx async client — 60s timeout, no retries on 429          │  │
+│  │  • httpx async streaming client — 60s timeout                    │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
               │
@@ -70,10 +72,9 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
      ▼                 ▼
 ┌──────────┐    ┌───────────────────────────────────────────────────┐
 │PostgreSQL│    │  Redis (Upstash)                                   │
-│(Supabase)│    │  • WS session registry (future multi-node)        │
-│          │    │  • Currently: in-memory dict (single-node MVP)    │
-│ users    │    └───────────────────────────────────────────────────┘
-│ convos   │
+│          │    │  • WS session registry (future multi-node)        │
+│ users    │    │  • Currently: in-memory set (single-node MVP)     │
+│ convos   │    └───────────────────────────────────────────────────┘
 │ messages │
 │ summaries│
 │ txns     │
@@ -100,7 +101,7 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 
 ---
 
-### 3.2 Database: PostgreSQL (Supabase at MVP scale)
+### 3.2 Database: PostgreSQL
 
 **Chosen over:** SQLite, DynamoDB, MongoDB, PlanetScale (MySQL)
 
@@ -109,11 +110,8 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 - `asyncpg` driver gives native async Postgres without synchronous wrapper overhead.
 - JSONB support available for future schema-less skill memory without separate key-value stores.
 - Alembic migration discipline — schema changes are versioned, reviewed, and applied in order.
-- Supabase wraps Postgres with row-level security (RLS) and connection pooling (PgBouncer) — useful when scaling past single-node.
 
 **Why not MongoDB:** Schemaless sounds appealing for conversations, but message ordering, cascaded deletes, and analytics queries (monthly spending by category) all want relational guarantees. Document stores require application-side joins for these patterns.
-
-**Why not DynamoDB:** Access pattern flexibility requires knowing your partition key upfront. NestorAI's query patterns evolve during MVP (by user, by conversation, by date range). PostgreSQL handles all these without schema re-design.
 
 **Tradeoff:** Relational DB requires schema migrations. Discipline cost: every schema change needs an Alembic migration. Benefit: no data inconsistency surprises.
 
@@ -126,13 +124,9 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 | Factor | Decision |
 |--------|----------|
 | Time-to-working-login | Clerk's `<SignIn />` component + `clerkMiddleware` gives email/password + social login in ~1 hour. |
-| JWKS-based verification | Backend verifies RS256 JWTs without roundtripping to Clerk on every request — latency is a cached JWKS fetch, not a network call per request. |
+| JWKS-based verification | Backend verifies RS256 JWTs without roundtripping to Clerk on every request. Cache has a 6-hour TTL so key rotations propagate without a restart. |
 | Free tier | 10,000 MAUs free — enough to reach early product-market fit without spending on auth. |
 | Session management | Clerk handles refresh tokens, device sessions, MFA — features that take weeks to build correctly. |
-
-**Why not Supabase Auth:** Supabase Auth is fine, but we already use Supabase for Postgres. Vendor concentration risk: if Supabase has an outage, both auth and DB go down together. Clerk as a separate vendor provides partial fault isolation.
-
-**Why not rolling our own:** Auth is a security surface, not a differentiator. Rolling your own means: password reset flows, email verification, brute-force protection, refresh token rotation, session invalidation. All of this is solved by Clerk.
 
 **Tradeoff:** Vendor dependency on Clerk. Migration path: Clerk exports user data. If they raise prices, migration to Auth0 or Supabase Auth is ~2-3 engineer-days.
 
@@ -162,7 +156,6 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 - `@clerk/nextjs` has first-class App Router support — middleware, `<ClerkProvider>`, server-side `auth()`.
 
 **Why PWA over native apps:**
-- Telegram already provides the best mobile chat UX for free — it runs on every phone.
 - PWA installs from Safari/Chrome to home screen — no App Store submission, no review time.
 - App Store review takes 1-2 weeks for first submission and is unpredictable.
 - React Native adds 3x build complexity with shared codebase benefits only if you have a large team.
@@ -172,33 +165,39 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 
 ---
 
-### 3.6 WebSocket: FastAPI native (Starlette)
+### 3.6 WebSocket: FastAPI native (Starlette) with streaming
 
 **Chosen over:** Socket.io, Pusher, Ably, Server-Sent Events (SSE)
 
 **Why raw WebSocket:**
 - FastAPI/Starlette handles WebSocket natively — no additional library.
-- For MVP, a single-node dict (`user_id → WebSocket`) is sufficient and observable.
-- SSE would work for server→client but doesn't handle client→server bidirectionally without a separate HTTP endpoint.
+- For MVP, a single-node `Dict[user_id, Set[WebSocket]]` is sufficient and supports multiple browser tabs per user.
+- SSE would work for server→client streaming but doesn't handle client→server bidirectionally without a separate HTTP endpoint.
 - Socket.io adds protocol overhead and room-management complexity not needed for 1:1 chat.
+
+**Streaming protocol:** Server sends `{type:"token"}` frames as each LLM chunk arrives, followed by a final `{type:"reply"}` with the complete assembled text. Clients accumulate tokens into a single message bubble. The `reply` frame canonicalizes the text and handles reconnect/race edge cases.
 
 **Tradeoff:** Single-node WS registry breaks with horizontal scaling. Migration path: replace `_browser_ws_sessions` dict with Redis pub/sub (`user_id → channel_name`). FastAPI publishes to Redis; all nodes subscribe. This is a ~200 LOC change with no client-side impact.
 
 ---
 
-### 3.7 LLM Strategy: BYOK (Bring Your Own Key)
+### 3.7 LLM Strategy: BYOK (Bring Your Own Key) + Streaming
 
 **Chosen over:** API key pooling, local Ollama, fine-tuned models
 
 **Why BYOK:**
 - Zero LLM cost to the product operator at MVP. Users fund their own inference.
-- OpenAI and Gemini are both supported via the same OpenAI-compatible `/chat/completions` endpoint.
+- OpenAI and any OpenAI-compatible API are supported via the same `/chat/completions` endpoint.
 - No rate-limit pooling complexity — each user's quota is isolated.
 
 **Why OpenAI-compatible endpoint abstraction:**
-- `SYSTEM_LLM_BASE_URL` + `LLM_MODEL` can point at OpenAI, Groq, Together, Ollama, or any OpenAI-compatible provider. No code change needed.
+- `SYSTEM_LLM_BASE_URL` + `LLM_MODEL` can point at OpenAI, Groq, Together, Ollama, or any compatible provider. No code change needed.
 
-**Tradeoff:** Users must bring their own API key, which creates onboarding friction. Mitigation: `OPENAI_API_KEY` env var as a system-level fallback so users can start immediately. Replace with user key when they're ready.
+**Streaming:** `_make_llm_stream` uses `httpx.AsyncClient.stream()` with SSE line parsing (`data: ...` → JSON delta extraction). Budget assistant falls back to deterministic reply if the LLM stream fails mid-response.
+
+**LLM error classification:** 401 → "Invalid API key" user message, 429 → "Rate limit reached", 5xx → "Temporarily unavailable". Avoids the generic "something went wrong" for actionable errors.
+
+**Tradeoff:** Users must bring their own API key, which creates onboarding friction. Mitigation: `OPENAI_API_KEY` env var as a system-level fallback so users can start immediately.
 
 ---
 
@@ -210,11 +209,11 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 
 **Why embedded:**
 - OpenClaw added a network hop, serialization, retry logic, and a separate deployment for every skill call.
-- Skills (budget_assistant, general) are tiny — budget_assistant is ~150 LOC. The indirection cost outweighs the isolation benefit.
+- Skills (budget_assistant, general) are tiny — budget_assistant is ~200 LOC. The indirection cost outweighs the isolation benefit.
 - Embedding skills means zero serialization overhead — the DB session passes directly.
 - Skills can still be extracted to microservices later when they grow or need separate scaling.
 
-**Tradeoff:** Embedding means a bad skill can crash the whole process. Mitigation: every skill call is wrapped in a try/except with graceful degradation.
+**Tradeoff:** Embedding means a bad skill can crash the whole process. Mitigation: every skill call is wrapped in try/except with graceful degradation and deterministic fallback text.
 
 ---
 
@@ -238,16 +237,16 @@ NestorAI is a personal AI assistant that routes natural-language messages throug
 
 ```
 users
-  user_id (PK)        — Clerk user ID or "telegram:{telegram_id}"
-  email               — nullable (Telegram users have no email)
-  auth_provider       — "clerk" | "telegram"
+  user_id (PK)        — Clerk user ID ("user_...")
+  email               — nullable
+  auth_provider       — "clerk"
   api_key_encrypted   — Fernet(user_openai_key) — nullable
 
 conversations
   conversation_id (PK)
   user_id (FK → users)
-  channel             — "web" | "telegram" | "whatsapp"
-  channel_id          — Telegram chat_id, browser session user_id, etc.
+  channel             — "web"
+  channel_id          — Clerk user_id (browser session)
   skill_id            — "general" | "budget_assistant"
 
 conversation_messages
@@ -289,13 +288,13 @@ Vercel (free)          Railway ($5-10/mo)
   Next.js 14      →      FastAPI + PostgreSQL plugin
   @clerk/nextjs   →      Alembic auto-migrate on deploy
   PWA manifest           CLOUD_SECRET_KEY, CLERK_SECRET_KEY,
-                         FERNET_KEY, TELEGRAM_BOT_TOKEN
+                         FERNET_KEY, OPENAI_API_KEY (optional)
 
 Clerk (free: 10k MAU)  Upstash Redis (free tier)
   JWT issuance           WS session registry (future)
   JWKS endpoint
 
-LLM: User BYOK (OpenAI / Gemini) — $0 to operator
+LLM: User BYOK (OpenAI-compatible) — $0 to operator
 ```
 
 ### Growth Path (500-5k users, ~$50-100/mo)
@@ -320,11 +319,10 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 | Concern | Mitigation |
 |---------|-----------|
 | User API keys in DB | Fernet symmetric encryption; key in Railway secrets |
-| Telegram webhook spoofing | `X-Telegram-Bot-Api-Secret-Token` header validation |
-| Clerk JWT forgery | RS256 verification via cached JWKS; `sub` claim required |
+| Clerk JWT forgery | RS256 verification via JWKS; 6h TTL cache; `sub` claim required |
 | SQL injection | SQLAlchemy ORM — parameterized queries only |
-| Secrets in logs | No logging of token values, API keys, or webhook payloads |
-| Multi-tenant data isolation | All queries WHERE user_id = :current_user_id |
+| Secrets in logs | No logging of token values, API keys, or message payloads |
+| Multi-tenant data isolation | All queries scoped `WHERE user_id = :current_user_id` |
 
 ---
 
@@ -332,23 +330,23 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 
 **Current (MVP):**
 - Structured logs via Python logging: component, user_id (not token), event type
-- `/health` endpoint: connected browser sessions, Telegram enabled status
+- `/health` endpoint: connected browser sessions count, service version
 - FastAPI auto-generated OpenAPI docs at `/docs` (disable in prod)
 
 **Planned:**
 - Sentry for exception tracking (add `sentry-sdk[fastapi]`)
 - Railway metrics for CPU/memory baseline
-- Custom events: `skill_dispatched`, `llm_call_latency`, `ws_connection_opened`
+- Custom events: `skill_dispatched`, `llm_call_latency_ms`, `ws_connection_opened`
 
 ---
 
 ## 8. Explicit Assumptions
 
 1. MVP user count is <500; single Railway instance is sufficient.
-2. All LLM calls are to OpenAI-compatible APIs; no streaming (SSE) in first version.
-3. Telegram is the primary mobile channel; PWA covers web. Native apps deferred.
-4. Users are trusted with their own API keys; no rate limiting on LLM calls per user yet.
-5. Conversation isolation is by `(user_id, channel, channel_id, skill_id)` — intentional. A user's Telegram conversation is separate from their web conversation.
+2. Web app (PWA) is the sole input channel. Additional channels (WhatsApp, Slack) deferred.
+3. All LLM calls use OpenAI-compatible streaming (`stream: true`); tokens arrive incrementally.
+4. Users are trusted with their own API keys; no per-user rate limiting on LLM calls yet.
+5. Conversation isolation is by `(user_id, channel, channel_id, skill_id)`. Switching skills starts a separate conversation context.
 
 ---
 
@@ -361,6 +359,5 @@ LLM: User BYOK (OpenAI / Gemini) — $0 to operator
 | pgvector RAG for long-term memory | Low | Context degradation reports |
 | Native iOS/Android | Low | 50-100 active users with identified mobile use cases |
 | Rate limiting per user (LLM calls) | Medium | First abuse incident |
-| Streaming LLM responses (SSE) | Medium | User requests faster perceived latency |
-| WhatsApp channel | Low | Business account approved |
 | Additional skills | Low | User demand |
+| Additional input channels (WhatsApp, Slack) | Low | User demand |

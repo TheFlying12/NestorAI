@@ -1,10 +1,12 @@
 # NestorAI
 
-Your personal AI assistant — available in the browser and on Telegram.
+Your personal AI assistant — available in the browser.
 
 ```
-Browser (Next.js PWA)  ──WSS──▶  Cloud API (FastAPI)  ──▶  LLM (OpenAI / Gemini)
-Telegram               ──────▶  Cloud API (FastAPI)  ──▶  PostgreSQL (context + data)
+Browser (Next.js PWA)  ──WSS──▶  Cloud API (FastAPI)  ──▶  LLM (OpenAI-compatible)
+                                         │
+                                    PostgreSQL
+                               (context + transactions)
 ```
 
 ---
@@ -13,10 +15,10 @@ Telegram               ──────▶  Cloud API (FastAPI)  ──▶  Po
 
 NestorAI has two built-in skills:
 
-| Skill | Web | Telegram | What it does |
-|-------|-----|----------|--------------|
-| **General** | Default | Default | Questions, summaries, writing help |
-| **Budget Assistant** | Sidebar → Budget | Always active | Log spending, budget alerts, monthly summary |
+| Skill | How to activate | What it does |
+|-------|----------------|--------------|
+| **General** | Default | Questions, summaries, writing help |
+| **Budget Assistant** | Sidebar → Budget | Log spending, budget alerts, monthly summary |
 
 ### Budget Assistant — example messages
 
@@ -36,10 +38,10 @@ What are the trade-offs between PostgreSQL and MongoDB?
 Draft a subject line for this email: [paste]
 ```
 
-### Universal commands (any channel)
+### Commands
 
 ```
-/forget   — clear all conversation history for this chat
+/forget   — clear all conversation history for the current skill
 ```
 
 ---
@@ -50,6 +52,9 @@ Draft a subject line for this email: [paste]
 2. Chat starts on the **General** skill
 3. Switch skills using the sidebar (☰)
 4. Add your OpenAI API key at **Settings → LLM API Key** (optional — a system key is used by default)
+5. Your conversation history reloads automatically on page refresh
+
+Responses stream token-by-token as the LLM generates them.
 
 ### Install as a mobile app (PWA)
 
@@ -57,14 +62,6 @@ Draft a subject line for this email: [paste]
 - **Android:** Chrome → menu → Install app
 
 No App Store required.
-
----
-
-## Using Telegram
-
-1. Find your bot (e.g. `@YourNestorBot`) and send any message
-2. Budget transactions are logged automatically when your message contains a dollar amount
-3. `/forget` clears conversation history
 
 ---
 
@@ -77,7 +74,7 @@ No App Store required.
 | [Railway](https://railway.app) | FastAPI + PostgreSQL | $5/mo (Hobby) |
 | [Clerk](https://clerk.com) | Auth (JWT) | Yes — 10k MAU |
 | [Vercel](https://vercel.com) | Next.js web app | Yes |
-| OpenAI / Gemini | LLM (user BYOK or system key) | Pay per use |
+| OpenAI / any OpenAI-compatible API | LLM (user BYOK or system key) | Pay per use |
 
 ---
 
@@ -90,8 +87,6 @@ No App Store required.
 # CLERK_JWKS_URL       — Clerk Dashboard > API Keys > Advanced
 # FERNET_KEY           — generate below
 # OPENAI_API_KEY       — system fallback LLM key (optional)
-# TELEGRAM_BOT_TOKEN   — from @BotFather (optional)
-# TELEGRAM_WEBHOOK_URL — https://<your-railway-url>
 
 # Generate a Fernet key:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -102,8 +97,6 @@ alembic upgrade head
 # Start command:
 uvicorn cloud_service.app.main:app --host 0.0.0.0 --port 8080
 ```
-
-Telegram webhook is registered automatically on startup.
 
 ---
 
@@ -163,7 +156,7 @@ GET  /api/auth/me          Current user info
   Auth: Bearer <clerk-jwt>
 ```
 
-### Chat (browser)
+### Chat (WebSocket)
 
 ```
 WebSocket /chat?token=<clerk-jwt>
@@ -173,18 +166,27 @@ Client → Server:
   {"type": "ping"}
 
 Server → Client:
-  {"type": "typing"}
-  {"type": "reply", "text": "Logged $20.00 for food at Trader Joe's..."}
+  {"type": "typing"}                    — LLM started
+  {"type": "token", "text": "Logged"}   — streaming token (one per LLM chunk)
+  {"type": "reply", "text": "..."}      — full reply (end of stream)
   {"type": "pong"}
 ```
 
 See [`docs/contracts/chat_websocket_protocol.md`](docs/contracts/chat_websocket_protocol.md) for the full protocol.
 
-### Webhooks
+### Conversation History
 
 ```
-POST /webhook/telegram     Telegram bot webhook (called by Telegram servers)
-GET  /health               Service health + connected sessions
+GET /api/conversations/messages?skill_id=general&limit=50
+  Auth: Bearer <clerk-jwt>
+
+Response: {"messages": [{"role": "user"|"assistant", "content": "...", "created_at": "..."}]}
+```
+
+### Health
+
+```
+GET /health
 ```
 
 ---
@@ -198,7 +200,6 @@ See [`.env.example`](.env.example) for all variables.
 | Cloud service | `DATABASE_URL`, `AUTO_MIGRATE`, `LOG_LEVEL` |
 | Auth | `CLERK_SECRET_KEY`, `CLERK_JWKS_URL`, `FERNET_KEY` |
 | LLM | `OPENAI_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` |
-| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET` |
 | Context | `CONTEXT_WINDOW_TURNS`, `ENABLE_CONTEXT_SUMMARY`, `MESSAGE_RETENTION_DAYS` |
 | Budget skill | `SKILL_BUDGETS` (JSON: `{"food":400,"transport":150}`) |
 | Web app (Vercel) | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` |
@@ -217,9 +218,10 @@ python -m unittest discover -s cloud_service/tests -p "test_*.py" -v
 
 - **12-turn sliding window** — last 12 messages always sent verbatim
 - **Rolling summary** — older messages compressed into a summary (every 6 turns or ~3500 tokens)
-- **Skill isolation** — Telegram and web conversations are separate; switching skills starts a new context
+- **Skill isolation** — switching skills switches to a separate conversation context
 - **Retention** — messages older than 90 days automatically deleted
 - **`/forget`** — wipe current conversation immediately
+- **History reload** — conversation history loads from DB on page refresh or skill change
 
 ---
 
@@ -227,8 +229,8 @@ python -m unittest discover -s cloud_service/tests -p "test_*.py" -v
 
 - Never commit `.env`. Rotate secrets immediately if exposed.
 - User LLM API keys are Fernet-encrypted before storage — never logged or readable in plaintext.
-- Telegram webhook validated via `X-Telegram-Bot-Api-Secret-Token` header.
-- Clerk JWTs verified via RS256 against the JWKS endpoint.
+- Clerk JWTs verified via RS256 against the JWKS endpoint (6-hour TTL cache; refreshes on rotation).
+- All queries are scoped `WHERE user_id = :current_user_id` — no cross-user data leakage.
 
 ---
 

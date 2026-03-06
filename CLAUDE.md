@@ -187,23 +187,21 @@ This section should be kept accurate. If missing, add it.
 
 ### Common commands
 
-**Local dev (cloud LLM mode):**
+**Local dev:**
 - Start stack: `docker compose up --build`
-- Start stack (local Ollama): `docker compose --profile local up --build`
-- Pi deploy: `docker compose -f docker-compose.yml -f compose-pi.yml up -d --build`
+- Backend only: `AUTO_MIGRATE=true uvicorn cloud_service.app.main:app --port 8080 --reload`
+- Frontend only: `cd web_app && npm install && npm run dev`
 
 **Tests:**
-- Gateway (fast): `cd gateway_service && python -m unittest discover -s tests -p "test_*.py" -v`
 - Cloud invariants: `python -m unittest discover -s cloud_service/tests -p "test_*.py" -v`
-- Device agent: `cd device_agent && python -m unittest discover -s tests -p "test_*.py" -v`
-- Inside container: `docker exec gateway-service python -m unittest discover -s /app/tests -p "test_*.py"`
-
-**Healthcheck:**
-- `./scripts/healthcheck.sh`
+- Inside container: `docker exec nestor-cloud python -m unittest discover -s /app/tests -p "test_*.py"`
 
 **Cloud service:**
 - Dev: `AUTO_MIGRATE=true uvicorn cloud_service.app.main:app --port 8080`
 - Migrations: `cd cloud_service && alembic upgrade head`
+
+**Health check:**
+- `curl http://localhost:8080/health`
 
 Agents must update this section when they introduce new workflows.
 
@@ -211,11 +209,11 @@ Agents must update this section when they introduce new workflows.
 
 ## 11) NestorAI invariants (Do not violate unless PLAN.md changes)
 
-- Device remains headless; no device UI.
-- Device connectivity is outbound-only.
-- Skills install into `/data/skills` and are managed via catalog.
-- Provider abstraction must isolate Telegram/WhatsApp from core skill engine.
+- Web app (PWA) is the sole input channel. No Telegram, WhatsApp, or other bots.
+- Skills are embedded Python modules in `cloud_service/app/skills/`. No separate microservices.
+- LLM calls use streaming (`stream: true`) via `dispatch_stream`. Non-streaming `dispatch` is for Telegram legacy only — do not use for new features.
 - Every network edge has timeouts + error handling.
+- All queries are scoped by `user_id` — no cross-user data access.
 
 ---
 
