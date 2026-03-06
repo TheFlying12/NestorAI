@@ -1,6 +1,5 @@
 "use client";
 
-import { useAuth, UserButton } from "@clerk/nextjs";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ChatWindow } from "@/components/ChatWindow";
 import { SkillSelector, SkillId } from "@/components/SkillSelector";
@@ -14,7 +13,6 @@ function newId() {
 }
 
 export default function ChatPage() {
-  const { getToken } = useAuth();
   const wsRef = useRef<NestorWS | null>(null);
   const streamingIdRef = useRef<string | null>(null);
 
@@ -28,7 +26,6 @@ export default function ChatPage() {
     if (msg.type === "typing") {
       setIsTyping(true);
     } else if (msg.type === "token") {
-      // H1: accumulate streaming tokens into a single message bubble
       setIsTyping(false);
       if (!streamingIdRef.current) {
         const id = newId();
@@ -49,7 +46,6 @@ export default function ChatPage() {
     } else if (msg.type === "reply") {
       setIsTyping(false);
       if (streamingIdRef.current) {
-        // Replace the accumulated streaming text with the final canonical reply
         setMessages((prev) =>
           prev.map((m) =>
             m.id === streamingIdRef.current ? { ...m, text: msg.text } : m
@@ -57,7 +53,6 @@ export default function ChatPage() {
         );
         streamingIdRef.current = null;
       } else {
-        // Non-streaming fallback: server sent reply without prior tokens
         setMessages((prev) => [
           ...prev,
           { id: newId(), role: "assistant", text: msg.text, timestamp: new Date() },
@@ -66,36 +61,23 @@ export default function ChatPage() {
     }
   }, []);
 
+  // Connect WebSocket on mount
   useEffect(() => {
-    let ws: NestorWS | null = null;
+    const ws = new NestorWS(handleWsMessage, setWsState);
+    wsRef.current = ws;
+    ws.connect();
+    return () => ws.disconnect();
+  }, [handleWsMessage]);
 
-    async function init() {
-      const token = await getToken();
-      if (!token) return;
-
-      ws = new NestorWS(token, handleWsMessage, setWsState);
-      wsRef.current = ws;
-      ws.connect();
-    }
-
-    init();
-
-    return () => {
-      ws?.disconnect();
-    };
-  }, [getToken, handleWsMessage]);
-
-  // M5: load conversation history from DB on mount and when skill changes
+  // Load conversation history when skill changes
   useEffect(() => {
     let cancelled = false;
     streamingIdRef.current = null;
     setMessages([]);
 
     async function loadHistory() {
-      const token = await getToken();
-      if (!token || cancelled) return;
       try {
-        const msgs = await getConversationMessages(token, skill);
+        const msgs = await getConversationMessages(skill);
         if (cancelled) return;
         setMessages(
           msgs.map((m) => ({
@@ -106,22 +88,18 @@ export default function ChatPage() {
           }))
         );
       } catch {
-        // History loading is non-critical; silently skip on error
+        // History loading is non-critical
       }
     }
 
     loadHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [skill, getToken]);
+    return () => { cancelled = true; };
+  }, [skill]);
 
   // Register service worker for PWA
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
-        // SW registration is non-critical
-      });
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
   }, []);
 
@@ -165,9 +143,6 @@ export default function ChatPage() {
       >
         <p style={{ fontWeight: 700, fontSize: "18px", marginBottom: "4px" }}>Nestor</p>
         <SkillSelector selected={skill} onChange={setSkill} />
-        <div style={{ marginTop: "auto" }}>
-          <UserButton afterSignOutUrl="/sign-in" />
-        </div>
       </aside>
 
       {/* Main chat area */}

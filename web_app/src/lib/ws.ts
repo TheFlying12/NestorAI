@@ -2,7 +2,7 @@
  * WebSocket connection manager for the Nestor cloud chat endpoint.
  *
  * Usage:
- *   const ws = new NestorWS(token, onMessage, onStateChange);
+ *   const ws = new NestorWS(onMessage, onStateChange);
  *   ws.connect();
  *   ws.send({ type: "message", text: "hello", skill_id: "general" });
  *   ws.disconnect();
@@ -33,7 +33,6 @@ export class NestorWS {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
-    private readonly token: string,
     private readonly onMessage: (msg: WsInbound) => void,
     private readonly onStateChange: (state: WsState) => void
   ) {}
@@ -57,8 +56,7 @@ export class NestorWS {
 
   private _open(): void {
     this.onStateChange("connecting");
-    const url = `${WS_URL}/chat?token=${encodeURIComponent(this.token)}`;
-    this.ws = new WebSocket(url);
+    this.ws = new WebSocket(`${WS_URL}/chat`);
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;

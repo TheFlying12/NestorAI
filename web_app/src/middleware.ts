@@ -1,13 +1,6 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-
-const isPublicRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
-
-export default clerkMiddleware((auth, req) => {
-  if (!isPublicRoute(req)) {
-    auth().protect();
-  }
-});
+// MVP: no auth middleware. All routes are public.
+export function middleware() {}
 
 export const config = {
-  matcher: ["/((?!_next|.*\\..*).*)"],
+  matcher: [],
 };

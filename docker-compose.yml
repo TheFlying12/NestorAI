@@ -6,11 +6,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      CLOUD_SECRET_KEY: ${CLOUD_SECRET_KEY}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
-      CLERK_JWKS_URL: ${CLERK_JWKS_URL}
-      FERNET_KEY: ${FERNET_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MVP_USER_ID: ${MVP_USER_ID:-local}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}

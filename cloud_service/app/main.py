@@ -14,14 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cloud_service.app.auth import (
-    ApiKeyRequest,
-    MeResponse,
-    get_current_user,
-    get_current_user_ws,
-    get_me,
-    store_api_key,
-)
+from cloud_service.app.auth import get_current_user, get_current_user_ws
 from cloud_service.app.context import (
     build_context_messages,
     cleanup_old_messages,
@@ -31,7 +24,7 @@ from cloud_service.app.context import (
     store_message,
 )
 from cloud_service.app.db import AsyncSessionLocal, create_all_tables, get_db
-from cloud_service.app.models import Conversation, ConversationMessage, User
+from cloud_service.app.models import Conversation, ConversationMessage
 from cloud_service.app.skills import router as skill_router
 from cloud_service.app.skills.router import (
     LLMError,
@@ -115,12 +108,6 @@ async def health() -> Dict[str, Any]:
         "version": "0.3.0",
         "connected_browsers": sum(len(v) for v in _browser_ws_sessions.values()),
     }
-
-
-# ─── Auth endpoints ───────────────────────────────────────────────────────────
-
-app.post("/api/auth/apikey")(store_api_key)
-app.get("/api/auth/me", response_model=MeResponse)(get_me)
 
 
 # ─── Conversation history endpoint ────────────────────────────────────────────
