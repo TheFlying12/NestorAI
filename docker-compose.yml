@@ -17,7 +17,8 @@ services:
 
   cloud:
     build:
-      context: ./cloud_service
+      context: .
+      dockerfile: cloud_service/Dockerfile
     container_name: nestor-cloud
     restart: unless-stopped
     depends_on:
@@ -25,8 +26,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://nestor:nestor@db:5432/nestordb
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-gemini-2.0-flash}
+      OPENAI_API_KEY: ${GEMINI_API_KEY:-${OPENAI_API_KEY:-}}
+      LLM_MODEL: ${LLM_MODEL:-models/gemini-2.5-flash}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
       MVP_USER_ID: ${MVP_USER_ID:-local}
       CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}
@@ -44,6 +45,23 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  web:
+    build:
+      context: ./web_app
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* are baked into the JS bundle at build time.
+        # The browser connects to the host-published port, not the Docker network.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8080}
+    container_name: nestor-web
+    restart: unless-stopped
+    depends_on:
+      cloud:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
 
 volumes:
   postgres_data:
