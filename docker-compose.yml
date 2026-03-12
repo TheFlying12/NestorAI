@@ -26,9 +26,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://nestor:nestor@db:5432/nestordb
-      OPENAI_API_KEY: ${GEMINI_API_KEY:-${OPENAI_API_KEY:-}}
-      LLM_MODEL: ${LLM_MODEL:-models/gemini-2.5-flash}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       MVP_USER_ID: ${MVP_USER_ID:-local}
       CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}
       SUMMARY_UPDATE_EVERY_TURNS: ${SUMMARY_UPDATE_EVERY_TURNS:-6}

@@ -86,10 +86,15 @@ def _make_llm_stream(api_key: str, model: str, base_url: str):
                 json={"model": model, "messages": messages, "max_tokens": LLM_MAX_TOKENS, "stream": True},
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             ) as response:
+                logger.debug("LLM stream response status=%s model=%s", response.status_code, model)
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
+                    body = await e.response.aread()
+                    logger.warning(
+                        "LLM stream HTTP %s model=%s body=%.300s", status, model, body.decode(errors="replace")
+                    )
                     if status == 401:
                         raise LLMError("Invalid API key. Please update your key in Settings.")
                     if status == 429:

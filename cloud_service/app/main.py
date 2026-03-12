@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +48,13 @@ HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "90"))
 RETENTION_INTERVAL_SECONDS = int(os.getenv("RETENTION_INTERVAL_SECONDS", "86400"))
 
 app = FastAPI(title="NestorAI Cloud Service", version="0.3.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # H4: multi-tab support — set of connections per user
 _browser_ws_sessions: Dict[str, Set[WebSocket]] = {}
@@ -190,8 +198,10 @@ async def browser_chat(
             await websocket.send_json({"type": "typing"})
 
             conv_id = await get_or_create_conversation(user_id, "web", user_id, skill_id, db)
-            await store_message(conv_id, "user", text, db)
+            # Build context BEFORE storing so the current user message isn't
+            # fetched from DB and then appended a second time by build_context_messages.
             context_msgs = await build_context_messages(conv_id, text, db)
+            await store_message(conv_id, "user", text, db)
 
             accumulated: List[str] = []
             try:
@@ -205,6 +215,7 @@ async def browser_chat(
                     accumulated.append(token)
                     await websocket.send_json({"type": "token", "text": token})
             except LLMError as exc:
+                logger.warning("LLM error user_id=%s skill=%s: %s", user_id, skill_id, exc)
                 accumulated = [str(exc)]
                 await websocket.send_json({"type": "token", "text": str(exc)})
             except Exception:
