@@ -1,0 +1,13 @@
+
+# clerk configuration (can include secrets)
+/.clerk/
+
+# local env (may contain secrets)
+.env.local
+
+# build output
+.next/
+out/
+
+# dependencies
+node_modules/
