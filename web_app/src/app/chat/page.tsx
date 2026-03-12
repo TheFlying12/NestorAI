@@ -172,6 +172,14 @@ export default function ChatPage() {
           <span style={{ fontSize: "12px", color: statusColor[wsState] }}>
             ● {statusLabel[wsState]}
           </span>
+          {wsState === "disconnected" || wsState === "error" ? (
+            <button
+              onClick={() => wsRef.current?.connect()}
+              style={{ fontSize: "12px", color: "#fff", background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "4px", padding: "2px 8px", cursor: "pointer" }}
+            >
+              Reconnect
+            </button>
+          ) : null}
         </div>
 
         {/* Chat */}

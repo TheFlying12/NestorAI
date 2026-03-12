@@ -40,6 +40,7 @@ export class NestorWS {
   connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.intentionalClose = false;
+    this.reconnectAttempts = 0;
     this._open();
   }
 
