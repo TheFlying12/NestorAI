@@ -10,12 +10,13 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cloud_service.app.auth import get_current_user, get_current_user_ws
+from cloud_service.app.auth import get_current_user, store_user_llm_key, verify_ws_token
 from cloud_service.app.context import (
     build_context_messages,
     cleanup_old_messages,
@@ -25,7 +26,7 @@ from cloud_service.app.context import (
     store_message,
 )
 from cloud_service.app.db import AsyncSessionLocal, create_all_tables, get_db
-from cloud_service.app.models import Conversation, ConversationMessage
+from cloud_service.app.models import Conversation, ConversationMessage, User
 from cloud_service.app.skills import router as skill_router
 from cloud_service.app.skills.router import (
     LLMError,
@@ -118,6 +119,41 @@ async def health() -> Dict[str, Any]:
     }
 
 
+# ─── Auth endpoints ───────────────────────────────────────────────────────────
+
+class ApiKeyRequest(BaseModel):
+    api_key: str
+
+
+@app.post("/api/auth/apikey")
+async def store_api_key(
+    body: ApiKeyRequest,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, str]:
+    if not body.api_key.strip():
+        raise HTTPException(400, "api_key must not be empty")
+    try:
+        await store_user_llm_key(user_id, body.api_key.strip(), db)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/me")
+async def get_me(
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    return {
+        "user_id": user_id,
+        "email": user.email if user else None,
+        "has_llm_key": bool(user and user.api_key_encrypted),
+    }
+
+
 # ─── Conversation history endpoint ────────────────────────────────────────────
 
 @app.get("/api/conversations/messages")
@@ -159,9 +195,16 @@ async def get_conversation_messages(
 @app.websocket("/chat")
 async def browser_chat(
     websocket: WebSocket,
-    user_id: str = Depends(get_current_user_ws),
+    token: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> None:
+    # Authenticate before accepting — closes with 1008 on failure
+    try:
+        user_id = await verify_ws_token(token, db)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     _browser_ws_sessions.setdefault(user_id, set()).add(websocket)
     logger.info("Browser WebSocket connected user_id=%s", user_id)

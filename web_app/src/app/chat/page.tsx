@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { ChatWindow } from "@/components/ChatWindow";
 import { SkillSelector, SkillId } from "@/components/SkillSelector";
 import { Message } from "@/components/MessageBubble";
@@ -13,6 +14,7 @@ function newId() {
 }
 
 export default function ChatPage() {
+  const { getToken } = useAuth();
   const wsRef = useRef<NestorWS | null>(null);
   const streamingIdRef = useRef<string | null>(null);
 
@@ -63,11 +65,11 @@ export default function ChatPage() {
 
   // Connect WebSocket on mount
   useEffect(() => {
-    const ws = new NestorWS(handleWsMessage, setWsState);
+    const ws = new NestorWS(handleWsMessage, setWsState, getToken);
     wsRef.current = ws;
     ws.connect();
     return () => ws.disconnect();
-  }, [handleWsMessage]);
+  }, [handleWsMessage, getToken]);
 
   // Load conversation history when skill changes
   useEffect(() => {
@@ -77,7 +79,8 @@ export default function ChatPage() {
 
     async function loadHistory() {
       try {
-        const msgs = await getConversationMessages(skill);
+        const token = await getToken();
+        const msgs = await getConversationMessages(skill, token);
         if (cancelled) return;
         setMessages(
           msgs.map((m) => ({
@@ -94,7 +97,7 @@ export default function ChatPage() {
 
     loadHistory();
     return () => { cancelled = true; };
-  }, [skill]);
+  }, [skill, getToken]);
 
   // Register service worker for PWA
   useEffect(() => {

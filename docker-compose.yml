@@ -26,10 +26,11 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://nestor:nestor@db:5432/nestordb
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL}
+      FERNET_KEY: ${FERNET_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
-      MVP_USER_ID: ${MVP_USER_ID:-local}
       CONTEXT_WINDOW_TURNS: ${CONTEXT_WINDOW_TURNS:-12}
       SUMMARY_UPDATE_EVERY_TURNS: ${SUMMARY_UPDATE_EVERY_TURNS:-6}
       ENABLE_CONTEXT_SUMMARY: ${ENABLE_CONTEXT_SUMMARY:-true}

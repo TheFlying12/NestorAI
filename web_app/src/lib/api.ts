@@ -4,14 +4,17 @@
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
-  });
+async function apiFetch<T>(
+  path: string,
+  token: string | null,
+  options: RequestInit = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`API ${path} failed ${res.status}: ${body}`);
@@ -27,10 +30,25 @@ export interface ChatMessage {
 
 export async function getConversationMessages(
   skillId: string,
-  limit = 50
+  token: string | null,
+  limit = 50,
 ): Promise<ChatMessage[]> {
   const data = await apiFetch<{ messages: ChatMessage[] }>(
-    `/api/conversations/messages?skill_id=${encodeURIComponent(skillId)}&limit=${limit}`
+    `/api/conversations/messages?skill_id=${encodeURIComponent(skillId)}&limit=${limit}`,
+    token,
   );
   return data.messages;
+}
+
+export async function storeApiKey(apiKey: string, token: string): Promise<void> {
+  await apiFetch<{ status: string }>("/api/auth/apikey", token, {
+    method: "POST",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export async function getMe(
+  token: string,
+): Promise<{ user_id: string; email: string | null; has_llm_key: boolean }> {
+  return apiFetch("/api/auth/me", token);
 }
