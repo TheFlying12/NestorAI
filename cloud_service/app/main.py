@@ -33,6 +33,7 @@ from cloud_service.app.skills.router import (
     SYSTEM_LLM_BASE_URL,
     SYSTEM_LLM_MODEL,
     _make_llm_complete,
+    _resolve_llm_complete,
     dispatch_stream,
 )
 
@@ -47,12 +48,13 @@ logger = logging.getLogger("cloud")
 
 HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "90"))
 RETENTION_INTERVAL_SECONDS = int(os.getenv("RETENTION_INTERVAL_SECONDS", "86400"))
+_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 
 app = FastAPI(title="NestorAI Cloud Service", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -64,6 +66,18 @@ _system_llm = None  # cached at startup
 
 
 # ─── Startup / Shutdown ────────────────────────────────────────────────────────
+
+async def _run_summary(conv_id: str, user_id: str) -> None:
+    """Background summarization with its own DB session and BYOK-aware LLM resolution."""
+    async with AsyncSessionLocal() as db:
+        try:
+            llm = await _resolve_llm_complete(user_id, db)
+        except ValueError:
+            if _system_llm is None:
+                return
+            llm = _system_llm
+        await maybe_update_summary(conv_id, llm, db)
+
 
 async def _retention_worker(db_factory) -> None:
     while True:
@@ -270,7 +284,7 @@ async def browser_chat(
             await store_message(conv_id, "assistant", full_reply, db)
             await websocket.send_json({"type": "reply", "text": full_reply})
 
-            asyncio.create_task(maybe_update_summary(conv_id, _system_llm, db))
+            asyncio.create_task(_run_summary(conv_id, user_id))
 
     except WebSocketDisconnect:
         logger.info("Browser WebSocket disconnected user_id=%s", user_id)

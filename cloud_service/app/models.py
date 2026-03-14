@@ -28,6 +28,9 @@ class User(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "channel", "channel_id", "skill_id", name="uq_conversation"),
+    )
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(
