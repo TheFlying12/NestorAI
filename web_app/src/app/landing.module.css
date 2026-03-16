@@ -169,6 +169,29 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.twoCol {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.subHero {
+  padding-bottom: 1.5rem;
+}
+
+.role {
+  margin: -0.3rem 0 0.6rem;
+  font-weight: 700;
+  color: var(--primary-dark);
+}
+
+.founderPhoto {
+  width: 6rem;
+  height: 6rem;
+  border-radius: 50%;
+  margin-bottom: 0.8rem;
+  object-fit: cover;
+  border: 1px solid rgba(15, 122, 89, 0.22);
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
