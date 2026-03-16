@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { SignInButton, SignUpButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignInButton, SignUpButton, Show } from "@clerk/nextjs";
 import styles from "./landing.module.css";
 
 export default function LandingPage() {
@@ -24,14 +24,14 @@ export default function LandingPage() {
           <nav className={`${styles.siteNav} ${navOpen ? styles.open : ""}`}>
             <Link href="/" className={styles.active}>Home</Link>
             <Link href="/about">About Us</Link>
-            <SignedIn>
+            <Show when="signed-in">
               <Link href="/chat" className={`${styles.btn} ${styles.btnSmall}`}>Go to App</Link>
-            </SignedIn>
-            <SignedOut>
+            </Show>
+            <Show when="signed-out">
               <SignInButton forceRedirectUrl="/chat">
                 <button className={`${styles.btn} ${styles.btnSmall}`}>Sign In</button>
               </SignInButton>
-            </SignedOut>
+            </Show>
           </nav>
         </div>
       </header>
@@ -47,17 +47,17 @@ export default function LandingPage() {
                 while keeping control over your data, workflows, and runtime.
               </p>
               <div className={styles.heroActions}>
-                <SignedOut>
+                <Show when="signed-out">
                   <SignUpButton forceRedirectUrl="/chat">
                     <button className={styles.btn}>Get Started</button>
                   </SignUpButton>
                   <SignInButton forceRedirectUrl="/chat">
                     <button className={`${styles.btn} ${styles.btnGhost}`}>Sign In</button>
                   </SignInButton>
-                </SignedOut>
-                <SignedIn>
+                </Show>
+                <Show when="signed-in">
                   <Link href="/chat" className={styles.btn}>Go to App</Link>
-                </SignedIn>
+                </Show>
               </div>
             </div>
             <aside className={styles.heroCard}>
@@ -99,14 +99,14 @@ export default function LandingPage() {
                 <h2>Ready to get started?</h2>
                 <p>Sign up and start building your personal AI assistant today.</p>
               </div>
-              <SignedOut>
+              <Show when="signed-out">
                 <SignUpButton forceRedirectUrl="/chat">
                   <button className={styles.btn}>Get Started Free</button>
                 </SignUpButton>
-              </SignedOut>
-              <SignedIn>
+              </Show>
+              <Show when="signed-in">
                 <Link href="/chat" className={styles.btn}>Go to App</Link>
-              </SignedIn>
+              </Show>
             </div>
           </div>
         </section>
