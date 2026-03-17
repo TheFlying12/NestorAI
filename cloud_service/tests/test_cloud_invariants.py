@@ -102,8 +102,8 @@ class TestBudgetAlerts(unittest.TestCase):
     """Budget alert thresholds fire at correct levels."""
 
     def _alerts(self, totals):
-        from cloud_service.app.skills.budget_assistant import _check_budget_alerts
-        return _check_budget_alerts(totals)
+        from cloud_service.app.skills.budget_assistant import _check_budget_alerts, BUDGETS
+        return _check_budget_alerts(totals, BUDGETS)
 
     def test_over_budget_triggers_alert(self):
         alerts = self._alerts({"food": 500.0})  # default budget 400
