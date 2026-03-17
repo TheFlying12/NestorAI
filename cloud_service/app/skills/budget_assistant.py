@@ -1,10 +1,7 @@
 """Budget Assistant skill — cloud-hosted PostgreSQL version.
 
-Ported from skills/budget_assistant/main.py.
-
 Categorization + math: fully deterministic (no LLM).
-LLM: used ONLY to generate the friendly natural-language reply.
-
+LLM: agentic loop with tool calling for flexible query handling.
 All transactions are stored in the PostgreSQL `transactions` table.
 """
 import json
@@ -14,10 +11,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, func, extract
+from sqlalchemy import select, func, extract, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cloud_service.app.models import Transaction
+from cloud_service.app.models import Transaction, SkillMemory
+from cloud_service.app.skills.agent_loop import run as agent_run
 
 logger = logging.getLogger("cloud.skills.budget_assistant")
 
@@ -71,9 +69,9 @@ def _parse_transaction(text: str) -> Optional[Dict[str, Any]]:
     return {"amount": round(amount, 2), "merchant": merchant, "category": category}
 
 
-def _check_budget_alerts(totals: Dict[str, float]) -> List[str]:
+def _check_budget_alerts(totals: Dict[str, float], limits: Dict[str, float]) -> List[str]:
     alerts = []
-    for category, budget in BUDGETS.items():
+    for category, budget in limits.items():
         spent = totals.get(category, 0.0)
         if spent > budget:
             pct = int((spent / budget - 1) * 100)
@@ -120,79 +118,314 @@ async def _monthly_totals(
     return {row.category: float(row.total) for row in rows}
 
 
-# ─── Intent detection ──────────────────────────────────────────────────────────
+async def _get_user_budget_limits(user_id: str, db: AsyncSession) -> Dict[str, float]:
+    """Merge env defaults with DB overrides stored in skill_memories."""
+    limits = dict(BUDGETS)
+    result = await db.execute(
+        select(SkillMemory.key, SkillMemory.value_json)
+        .where(SkillMemory.skill_id == "budget_assistant", SkillMemory.user_id == user_id)
+    )
+    for row in result.all():
+        if row.key.startswith("budget_limit_"):
+            category = row.key[len("budget_limit_"):]
+            try:
+                limits[category] = float(json.loads(row.value_json))
+            except (ValueError, json.JSONDecodeError):
+                pass
+    return limits
 
-_SUMMARY_KEYWORDS = re.compile(
-    r"\b(summary|spending|spent|total|monthly|how much|budget)\b", re.IGNORECASE
-)
+
+async def _set_user_budget_limit(user_id: str, category: str, amount: float, db: AsyncSession) -> None:
+    key = f"budget_limit_{category}"
+    existing = await db.execute(
+        select(SkillMemory).where(
+            SkillMemory.skill_id == "budget_assistant",
+            SkillMemory.user_id == user_id,
+            SkillMemory.key == key,
+        )
+    )
+    row = existing.scalar_one_or_none()
+    if row:
+        row.value_json = json.dumps(amount)
+    else:
+        db.add(SkillMemory(skill_id="budget_assistant", user_id=user_id, key=key, value_json=json.dumps(amount)))
+    await db.commit()
 
 
-def _detect_intent(text: str) -> str:
-    """Simple keyword-based intent detection (no LLM required)."""
-    return "monthly_summary" if _SUMMARY_KEYWORDS.search(text) else "add_transaction"
+# ─── Tool definitions ──────────────────────────────────────────────────────────
+
+BUDGET_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "log_transaction",
+            "description": "Log a new spending transaction for the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Transaction amount in USD"},
+                    "category": {"type": "string", "description": "Spending category (food/transport/utilities/entertainment/health/shopping/other)"},
+                    "merchant": {"type": "string", "description": "Merchant or store name"},
+                    "note": {"type": "string", "description": "Original user message or note"},
+                },
+                "required": ["amount", "category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_monthly_summary",
+            "description": "Get total spending by category for a given month.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "month": {"type": "string", "description": "Month as YYYY-MM, or 'current' for current month"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_budget_limits",
+            "description": "Get the user's budget limits per category.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_budget_limit",
+            "description": "Set a budget limit for a spending category.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Spending category"},
+                    "amount": {"type": "number", "description": "Monthly budget limit in USD"},
+                },
+                "required": ["category", "amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_transactions",
+            "description": "Get recent transactions, optionally filtered by category or merchant.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Filter by category (optional)"},
+                    "merchant": {"type": "string", "description": "Filter by merchant name (optional, partial match)"},
+                    "limit": {"type": "integer", "description": "Max transactions to return (default 10)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_spending_trends",
+            "description": "Compare spending this month vs last month by category. Use when user asks about trends, changes, or 'am I spending more'.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_transaction",
+            "description": "Delete a transaction by ID (use get_transactions to find the ID first).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "transaction_id": {"type": "integer", "description": "Transaction ID to delete"},
+                },
+                "required": ["transaction_id"],
+            },
+        },
+    },
+]
+
+
+# ─── Tool executor ─────────────────────────────────────────────────────────────
+
+async def _execute_tool(name: str, args: Dict, db: AsyncSession, user_id: str) -> str:
+    now = datetime.now(timezone.utc)
+
+    if name == "log_transaction":
+        amount = float(args["amount"])
+        category = args.get("category") or _categorize(args.get("note", ""))
+        merchant = args.get("merchant", "")
+        note = args.get("note", "")
+        await _insert_transaction(user_id, amount, category, merchant, note, db)
+        limits = await _get_user_budget_limits(user_id, db)
+        totals = await _monthly_totals(user_id, now.year, now.month, db)
+        alerts = _check_budget_alerts(totals, limits)
+        result = f"Logged ${amount:.2f} in {category}"
+        if merchant:
+            result += f" at {merchant}"
+        if alerts:
+            result += ". Alerts: " + "; ".join(alerts)
+        return result
+
+    if name == "get_monthly_summary":
+        month_str = args.get("month", "current")
+        if month_str == "current" or not month_str:
+            year, month = now.year, now.month
+        else:
+            try:
+                dt = datetime.strptime(month_str, "%Y-%m")
+                year, month = dt.year, dt.month
+            except ValueError:
+                year, month = now.year, now.month
+        totals = await _monthly_totals(user_id, year, month, db)
+        if not totals:
+            return f"No transactions found for {year}-{month:02d}."
+        limits = await _get_user_budget_limits(user_id, db)
+        alerts = _check_budget_alerts(totals, limits)
+        lines = [f"{cat.title()}: ${amt:.2f}" for cat, amt in totals.items()]
+        total = sum(totals.values())
+        summary = f"Spending for {year}-{month:02d}:\n" + "\n".join(lines) + f"\nTotal: ${total:.2f}"
+        if alerts:
+            summary += "\nAlerts: " + "; ".join(alerts)
+        return summary
+
+    if name == "get_budget_limits":
+        limits = await _get_user_budget_limits(user_id, db)
+        lines = [f"{cat.title()}: ${amt:.2f}/month" for cat, amt in limits.items()]
+        return "Budget limits:\n" + "\n".join(lines)
+
+    if name == "set_budget_limit":
+        category = args["category"].lower()
+        amount = float(args["amount"])
+        await _set_user_budget_limit(user_id, category, amount, db)
+        return f"Budget limit for {category} set to ${amount:.2f}/month."
+
+    if name == "get_transactions":
+        category_filter = args.get("category")
+        merchant_filter = args.get("merchant")
+        limit = int(args.get("limit", 10))
+        query = select(Transaction).where(Transaction.user_id == user_id)
+        if category_filter:
+            query = query.where(Transaction.category == category_filter.lower())
+        if merchant_filter:
+            query = query.where(Transaction.merchant.ilike(f"%{merchant_filter}%"))
+        query = query.order_by(Transaction.timestamp.desc()).limit(limit)
+        result = await db.execute(query)
+        rows = result.scalars().all()
+        if not rows:
+            return "No transactions found."
+        lines = [
+            f"[{t.id}] ${float(t.amount):.2f} {t.category}"
+            + (f" at {t.merchant}" if t.merchant else "")
+            + f" — {t.timestamp.strftime('%b %d')}"
+            for t in rows
+        ]
+        return "\n".join(lines)
+
+    if name == "get_spending_trends":
+        # Current month vs previous month
+        if now.month == 1:
+            prev_year, prev_month = now.year - 1, 12
+        else:
+            prev_year, prev_month = now.year, now.month - 1
+
+        curr_totals = await _monthly_totals(user_id, now.year, now.month, db)
+        prev_totals = await _monthly_totals(user_id, prev_year, prev_month, db)
+
+        if not curr_totals and not prev_totals:
+            return "No transaction data yet to compare trends."
+
+        all_cats = sorted(set(curr_totals) | set(prev_totals))
+        curr_total = sum(curr_totals.values())
+        prev_total = sum(prev_totals.values())
+
+        lines = [
+            f"Spending trends: {now.strftime('%b')} vs {datetime(prev_year, prev_month, 1).strftime('%b')}:\n"
+        ]
+        for cat in all_cats:
+            curr = curr_totals.get(cat, 0.0)
+            prev = prev_totals.get(cat, 0.0)
+            if prev > 0:
+                pct = int((curr - prev) / prev * 100)
+                arrow = "↑" if pct > 0 else "↓" if pct < 0 else "→"
+                change = f"{arrow} {abs(pct)}%"
+            elif curr > 0:
+                change = "↑ new"
+            else:
+                change = "→"
+            lines.append(f"  {cat.title():<14} ${curr:>7.2f}  (was ${prev:.2f})  {change}")
+
+        overall_change = ""
+        if prev_total > 0:
+            pct = int((curr_total - prev_total) / prev_total * 100)
+            overall_change = f"  {'↑' if pct > 0 else '↓'} {abs(pct)}% overall"
+        lines.append(f"\nTotal: ${curr_total:.2f} (was ${prev_total:.2f}){overall_change}")
+
+        # Days elapsed this month for projection
+        days_in_month = 31  # conservative
+        days_elapsed = now.day
+        if days_elapsed < days_in_month and curr_total > 0:
+            projected = curr_total / days_elapsed * days_in_month
+            lines.append(f"Projected month-end: ~${projected:.0f} (based on {days_elapsed} days)")
+
+        return "\n".join(lines)
+
+    if name == "delete_transaction":
+        txn_id = int(args["transaction_id"])
+        result = await db.execute(
+            select(Transaction).where(
+                Transaction.id == txn_id, Transaction.user_id == user_id
+            )
+        )
+        txn = result.scalar_one_or_none()
+        if not txn:
+            return f"Transaction {txn_id} not found."
+        desc = f"${float(txn.amount):.2f} {txn.category}" + (f" at {txn.merchant}" if txn.merchant else "")
+        await db.delete(txn)
+        await db.commit()
+        return f"Deleted transaction {txn_id}: {desc}."
+
+    return f"Unknown tool: {name}"
 
 
 # ─── Main dispatch ─────────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """You are a sharp, friendly budget assistant. Today: {today}.
+
+Your tools:
+- log_transaction: Use whenever the user mentions spending money. Extract amount, merchant, and infer category.
+- get_monthly_summary: Use for "how much did I spend", "what's my budget", monthly overview questions.
+- get_spending_trends: Use for "am I spending more", "how does this month compare", trend questions.
+- get_transactions: Use to list recent transactions, optionally by category or merchant.
+- get_budget_limits: Use when asked about budget limits or remaining budget.
+- set_budget_limit: Use when user wants to change a budget limit.
+- delete_transaction: Use when user says a transaction was wrong or wants to remove it.
+
+Guidelines:
+- When the user mentions ANY purchase, spending, or payment — immediately call log_transaction. Don't ask for confirmation.
+- Infer category from context: coffee/restaurant = food, Uber/gas = transport, Netflix/Spotify = entertainment.
+- After logging, briefly confirm and mention if they're near/over budget for that category.
+- Be concise. One or two sentences is usually enough after a transaction log.
+- If showing a summary, include totals and any budget alerts prominently."""
+
 
 async def handle(
     user_id: str,
     text: str,
     context_messages: List[Dict[str, str]],
-    llm_complete,  # async callable: (messages) -> str
+    llm_complete,
     db: AsyncSession,
 ) -> str:
-    intent = _detect_intent(text)
-    if intent == "monthly_summary":
-        return await _handle_summary(user_id, llm_complete, db)
-    return await _handle_add_transaction(user_id, text, llm_complete, db)
-
-
-async def _handle_add_transaction(
-    user_id: str, text: str, llm_complete, db: AsyncSession
-) -> str:
+    # Legacy non-streaming path — deterministic fallback
     parsed = _parse_transaction(text)
-    if not parsed:
-        return "I couldn't find an amount in your message. Try: 'I spent $15 at Starbucks'."
-
-    amount = parsed["amount"]
-    category = parsed["category"]
-    merchant = parsed["merchant"]
-
-    await _insert_transaction(user_id, amount, category, merchant, text, db)
-
-    now = datetime.now(timezone.utc)
-    totals = await _monthly_totals(user_id, now.year, now.month, db)
-    alerts = _check_budget_alerts(totals)
-
-    summary_line = f"Transaction logged: ${amount:.2f} in {category}"
-    if merchant:
-        summary_line += f" at {merchant}"
-
-    explain_prompt_parts = [summary_line]
-    if alerts:
-        explain_prompt_parts.append("Budget alerts: " + "; ".join(alerts))
-    explain_prompt_parts.append("Give a brief friendly confirmation (2-3 sentences).")
-
-    llm_messages = [
-        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
-        {"role": "user", "content": ". ".join(explain_prompt_parts)},
-    ]
-
-    try:
-        explanation = await llm_complete(llm_messages)
-        if explanation.strip():
-            return explanation
-    except Exception:
-        logger.warning("LLM explanation failed for add_transaction", exc_info=True)
-
-    # Deterministic fallback
-    reply = f"Logged ${amount:.2f} for {category}"
-    if merchant:
-        reply += f" at {merchant}"
-    reply += "."
-    if alerts:
-        reply += "\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
-    return reply
+    if parsed:
+        await _insert_transaction(user_id, parsed["amount"], parsed["category"], parsed["merchant"], text, db)
+        return f"Logged ${parsed['amount']:.2f} for {parsed['category']}."
+    return "I couldn't understand that budget request. Try: 'I spent $20 at Starbucks'."
 
 
 async def handle_stream(
@@ -200,136 +433,35 @@ async def handle_stream(
     text: str,
     context_messages: List[Dict[str, str]],
     llm_stream,
+    llm_complete_with_tools,
     db: AsyncSession,
 ):
-    """Stream LLM tokens for budget assistant queries with deterministic fallback."""
-    intent = _detect_intent(text)
-    if intent == "monthly_summary":
-        async for token in _handle_summary_stream(user_id, llm_stream, db):
-            yield token
-    else:
-        async for token in _handle_add_transaction_stream(user_id, text, llm_stream, db):
-            yield token
-
-
-async def _handle_add_transaction_stream(
-    user_id: str, text: str, llm_stream, db: AsyncSession
-):
-    parsed = _parse_transaction(text)
-    if not parsed:
-        yield "I couldn't find an amount in your message. Try: 'I spent $15 at Starbucks'."
-        return
-
-    amount = parsed["amount"]
-    category = parsed["category"]
-    merchant = parsed["merchant"]
-
-    await _insert_transaction(user_id, amount, category, merchant, text, db)
-
-    now = datetime.now(timezone.utc)
-    totals = await _monthly_totals(user_id, now.year, now.month, db)
-    alerts = _check_budget_alerts(totals)
-
-    summary_line = f"Transaction logged: ${amount:.2f} in {category}"
-    if merchant:
-        summary_line += f" at {merchant}"
-
-    explain_prompt_parts = [summary_line]
-    if alerts:
-        explain_prompt_parts.append("Budget alerts: " + "; ".join(alerts))
-    explain_prompt_parts.append("Give a brief friendly confirmation (2-3 sentences).")
-
-    llm_messages = [
-        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
-        {"role": "user", "content": ". ".join(explain_prompt_parts)},
-    ]
-
-    fallback_reply = f"Logged ${amount:.2f} for {category}"
-    if merchant:
-        fallback_reply += f" at {merchant}"
-    fallback_reply += "."
-    if alerts:
-        fallback_reply += "\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
+    """Stream LLM tokens using agentic tool-calling loop."""
+    today = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(today=today)}]
+    messages.extend(context_messages)
+    messages.append({"role": "user", "content": text})
 
     try:
-        async for token in llm_stream(llm_messages):
+        async for token in agent_run(
+            messages=messages,
+            tools=BUDGET_TOOLS,
+            tool_executor=_execute_tool,
+            llm_complete_with_tools=llm_complete_with_tools,
+            llm_stream=llm_stream,
+            db=db,
+            user_id=user_id,
+        ):
             yield token
     except Exception:
-        logger.warning("LLM stream failed for add_transaction", exc_info=True)
-        yield fallback_reply
-
-
-async def _handle_summary_stream(user_id: str, llm_stream, db: AsyncSession):
-    now = datetime.now(timezone.utc)
-    totals = await _monthly_totals(user_id, now.year, now.month, db)
-
-    if not totals:
-        yield "No transactions recorded for this month yet."
-        return
-
-    total_spent = sum(totals.values())
-    lines = [f"{cat.title()}: ${amt:.2f}" for cat, amt in totals.items()]
-    breakdown = "\n".join(lines)
-    alerts = _check_budget_alerts(totals)
-
-    explain_text = (
-        f"Monthly spending for {now.strftime('%B %Y')}:\n{breakdown}\n"
-        f"Total: ${total_spent:.2f}"
-    )
-    if alerts:
-        explain_text += "\nAlerts: " + "; ".join(alerts)
-    explain_text += "\nWrite a brief friendly 2-3 sentence summary."
-
-    llm_messages = [
-        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
-        {"role": "user", "content": explain_text},
-    ]
-
-    fallback_reply = f"Your spending for {now.strftime('%B %Y')}:\n{breakdown}\nTotal: ${total_spent:.2f}"
-    if alerts:
-        fallback_reply += "\n\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
-
-    try:
-        async for token in llm_stream(llm_messages):
-            yield token
-    except Exception:
-        logger.warning("LLM stream failed for summary", exc_info=True)
-        yield fallback_reply
-
-
-async def _handle_summary(user_id: str, llm_complete, db: AsyncSession) -> str:
-    now = datetime.now(timezone.utc)
-    totals = await _monthly_totals(user_id, now.year, now.month, db)
-
-    if not totals:
-        return "No transactions recorded for this month yet."
-
-    total_spent = sum(totals.values())
-    lines = [f"{cat.title()}: ${amt:.2f}" for cat, amt in totals.items()]
-    breakdown = "\n".join(lines)
-    alerts = _check_budget_alerts(totals)
-
-    explain_text = (
-        f"Monthly spending for {now.strftime('%B %Y')}:\n{breakdown}\n"
-        f"Total: ${total_spent:.2f}"
-    )
-    if alerts:
-        explain_text += "\nAlerts: " + "; ".join(alerts)
-    explain_text += "\nWrite a brief friendly 2-3 sentence summary."
-
-    llm_messages = [
-        {"role": "system", "content": "You are a friendly budget assistant. Be concise."},
-        {"role": "user", "content": explain_text},
-    ]
-
-    try:
-        explanation = await llm_complete(llm_messages)
-        if explanation.strip():
-            return explanation
-    except Exception:
-        logger.warning("LLM explanation failed for summary", exc_info=True)
-
-    reply = f"Your spending for {now.strftime('%B %Y')}:\n{breakdown}\nTotal: ${total_spent:.2f}"
-    if alerts:
-        reply += "\n\n\u26a0\ufe0f " + "\n\u26a0\ufe0f ".join(alerts)
-    return reply
+        logger.warning("Agentic budget loop failed, using deterministic fallback", exc_info=True)
+        # Deterministic fallback
+        parsed = _parse_transaction(text)
+        if parsed:
+            try:
+                await _insert_transaction(user_id, parsed["amount"], parsed["category"], parsed["merchant"], text, db)
+            except Exception:
+                pass
+            yield f"Logged ${parsed['amount']:.2f} for {parsed['category']}."
+        else:
+            yield "I couldn't process that budget request. Try: 'I spent $20 at Starbucks'."
