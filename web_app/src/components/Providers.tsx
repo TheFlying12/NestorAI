@@ -1,7 +1,7 @@
 "use client";
 
-// MVP / local mode: no auth wrapper.
-// Add ClerkProvider back here when deploying to production.
+import { ClerkProvider } from "@clerk/nextjs";
+
 export function Providers({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <ClerkProvider>{children}</ClerkProvider>;
 }
