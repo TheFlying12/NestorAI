@@ -7,17 +7,21 @@ const config: Config = {
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   corePlugins: {
-    // Disable preflight so Tailwind doesn't override the existing globals.css reset
     preflight: false,
   },
   theme: {
     extend: {
       colors: {
         primary: {
-          DEFAULT: "#0f7a59",
-          dark: "#0a5d44",
-          light: "#44b38c",
+          DEFAULT: "#5E6F52",
+          dark: "#4a5840",
+          light: "#7a8f6b",
         },
+        secondary: "#6B7C8F",
+        accent: "#C8A96A",
+        charcoal: "#2B2B2B",
+        warm: "#FAF9F6",
+        soft: "#F1EFEA",
       },
       fontFamily: {
         sans: ["Manrope", "-apple-system", "BlinkMacSystemFont", "sans-serif"],

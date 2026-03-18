@@ -14,8 +14,8 @@ export default function LandingPage() {
   return (
     <div
       style={{
-        background: "#ffffff",
-        color: "#152019",
+        background: "#FAF9F6",
+        color: "#2B2B2B",
         fontFamily: "'Manrope', -apple-system, BlinkMacSystemFont, sans-serif",
         lineHeight: 1.55,
         minHeight: "100vh",

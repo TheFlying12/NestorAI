@@ -26,12 +26,12 @@ const testimonials = [
 
 export function Testimonials() {
   return (
-    <section className="py-20 bg-white">
+    <section className="py-20" style={{ background: "#F1EFEA" }}>
       <div className="max-w-6xl mx-auto px-5">
         <div className="text-center mb-14">
           <h2
-            className="font-display font-bold text-gray-900 mb-3"
-            style={{ fontSize: "clamp(1.6rem, 3vw, 2.3rem)" }}
+            className="font-display font-bold mb-3"
+            style={{ fontSize: "clamp(1.6rem, 3vw, 2.3rem)", color: "#2B2B2B" }}
           >
             People who use it, love it
           </h2>
@@ -41,24 +41,25 @@ export function Testimonials() {
           {testimonials.map(({ name, role, avatar, quote }) => (
             <article
               key={name}
-              className="p-6 rounded-2xl border border-gray-100 shadow-sm bg-[#fafafa] flex flex-col gap-4"
+              className="p-6 rounded-2xl border flex flex-col gap-4"
+              style={{ background: "#FAF9F6", borderColor: "#E8E4DC" }}
             >
-              {/* Stars */}
+              {/* Stars — soft gold */}
               <div className="flex gap-1">
                 {Array.from({ length: 5 }).map((_, i) => (
-                  <Star key={i} size={14} className="fill-amber-400 text-amber-400" />
+                  <Star key={i} size={14} style={{ fill: "#C8A96A", color: "#C8A96A" }} />
                 ))}
               </div>
 
-              <p className="text-gray-600 text-sm leading-relaxed flex-1">&ldquo;{quote}&rdquo;</p>
+              <p className="text-sm leading-relaxed flex-1" style={{ color: "#6B7C8F" }}>&ldquo;{quote}&rdquo;</p>
 
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center text-primary font-bold text-xs flex-shrink-0">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0" style={{ background: "rgba(94,111,82,0.15)", color: "#5E6F52" }}>
                   {avatar}
                 </div>
                 <div>
-                  <p className="text-sm font-bold text-gray-900">{name}</p>
-                  <p className="text-xs text-gray-400">{role}</p>
+                  <p className="text-sm font-bold" style={{ color: "#2B2B2B" }}>{name}</p>
+                  <p className="text-xs" style={{ color: "#6B7C8F" }}>{role}</p>
                 </div>
               </div>
             </article>
