@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from sqlalchemy import select, func, extract, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cloud_service.app.models import Transaction, SkillMemory
+from cloud_service.app.models import NotificationLog, Transaction, SkillMemory, User
 from cloud_service.app.skills.agent_loop import run as agent_run
 
 logger = logging.getLogger("cloud.skills.budget_assistant")
@@ -269,6 +269,39 @@ async def _execute_tool(name: str, args: Dict, db: AsyncSession, user_id: str) -
             result += f" at {merchant}"
         if alerts:
             result += ". Alerts: " + "; ".join(alerts)
+
+        # Fire SMS/email budget alert if this category is now over its limit
+        if alerts and category in limits and totals.get(category, 0.0) > limits[category]:
+            try:
+                user_result = await db.execute(select(User).where(User.user_id == user_id))
+                user_obj = user_result.scalar_one_or_none()
+                if user_obj:
+                    alert_msg = (
+                        f"Nestor budget alert: {category.title()} is ${totals[category]:.2f} "
+                        f"of ${limits[category]:.2f} limit."
+                    )
+                    if user_obj.phone_number:
+                        from cloud_service.app.integrations.twilio_client import send_sms
+                        await send_sms(user_obj.phone_number, alert_msg)
+                        db.add(NotificationLog(
+                            user_id=user_id, channel="sms", type="budget_alert",
+                            to_address=user_obj.phone_number, body=alert_msg, status="sent",
+                        ))
+                    if user_obj.notification_email:
+                        from cloud_service.app.integrations.resend_client import send_email
+                        await send_email(
+                            user_obj.notification_email,
+                            f"Nestor Budget Alert: {category.title()}",
+                            f"<p>{alert_msg}</p>",
+                        )
+                        db.add(NotificationLog(
+                            user_id=user_id, channel="email", type="budget_alert",
+                            to_address=user_obj.notification_email, body=alert_msg, status="sent",
+                        ))
+                    await db.commit()
+            except Exception:
+                logger.warning("Budget alert send failed for user_id=%s", user_id, exc_info=True)
+
         return result
 
     if name == "get_monthly_summary":

@@ -7,10 +7,11 @@ Channels:
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -26,7 +27,8 @@ from cloud_service.app.context import (
     store_message,
 )
 from cloud_service.app.db import AsyncSessionLocal, create_all_tables, get_db
-from cloud_service.app.models import Conversation, ConversationMessage, User
+from cloud_service.app.models import Conversation, ConversationMessage, NotificationLog, User
+from cloud_service.app.notifications import scheduler as notification_scheduler
 from cloud_service.app.skills import router as skill_router
 from cloud_service.app.skills.router import (
     LLMError,
@@ -36,6 +38,9 @@ from cloud_service.app.skills.router import (
     _resolve_llm_complete,
     dispatch_stream,
 )
+
+_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -106,6 +111,7 @@ async def startup() -> None:
         _system_llm = _noop
 
     _retention_task = asyncio.create_task(_retention_worker(AsyncSessionLocal))
+    notification_scheduler.start()
 
     logger.info("Cloud service started v0.3.0")
 
@@ -119,6 +125,7 @@ async def shutdown() -> None:
             await _retention_task
         except asyncio.CancelledError:
             pass
+    notification_scheduler.shutdown(wait=False)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -165,6 +172,8 @@ async def get_me(
         "user_id": user_id,
         "email": user.email if user else None,
         "has_llm_key": bool(user and user.api_key_encrypted),
+        "phone_number": user.phone_number if user else None,
+        "notification_email": user.notification_email if user else None,
     }
 
 
@@ -202,6 +211,134 @@ async def get_conversation_messages(
             if m.role in ("user", "assistant")
         ]
     }
+
+
+# ─── Contact info endpoints ───────────────────────────────────────────────────
+
+class PhoneUpdate(BaseModel):
+    phone_number: str
+
+
+class NotificationEmailUpdate(BaseModel):
+    notification_email: str
+
+
+@app.post("/api/me/phone")
+async def set_phone(
+    body: PhoneUpdate,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, str]:
+    if not _E164_RE.match(body.phone_number):
+        raise HTTPException(400, "Invalid phone number. Use E.164 format, e.g. +14155550100")
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.phone_number = body.phone_number
+    await db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/me/notification-email")
+async def set_notification_email(
+    body: NotificationEmailUpdate,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, str]:
+    if not _EMAIL_RE.match(body.notification_email):
+        raise HTTPException(400, "Invalid email address")
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.notification_email = body.notification_email
+    await db.commit()
+    return {"status": "ok"}
+
+
+# ─── Twilio inbound SMS webhook ────────────────────────────────────────────────
+
+_TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+_TWILIO_WEBHOOK_URL = os.environ.get("TWILIO_WEBHOOK_URL", "")
+_TWIML_EMPTY = '<?xml version="1.0" encoding="UTF-8"?><Response/>'
+
+
+@app.post("/webhooks/twilio/sms")
+async def twilio_sms_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    from_number: str = form.get("From", "")
+    body_text: str = form.get("Body", "")
+
+    # Validate Twilio signature when credentials are configured
+    if _TWILIO_ACCOUNT_SID:
+        from cloud_service.app.integrations.twilio_client import validate_signature
+        signature = request.headers.get("X-Twilio-Signature", "")
+        webhook_url = _TWILIO_WEBHOOK_URL or str(request.url)
+        params = {k: v for k, v in form.items()}
+        if not validate_signature(webhook_url, params, signature):
+            logger.warning("Invalid Twilio signature from=%s", from_number)
+            raise HTTPException(403, "Invalid Twilio signature")
+
+    from cloud_service.app.integrations.twilio_client import send_sms
+
+    # Look up user by phone number
+    result = await db.execute(select(User).where(User.phone_number == from_number))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        await send_sms(
+            from_number,
+            "This number isn't linked to a Nestor account. Visit the app to connect your phone.",
+        )
+        return Response(content=_TWIML_EMPTY, media_type="application/xml")
+
+    if not body_text.strip():
+        return Response(content=_TWIML_EMPTY, media_type="application/xml")
+
+    # Route through context + skill dispatch (channel="sms" isolates SMS history from web)
+    conv_id = await get_or_create_conversation(user.user_id, "sms", from_number, "general", db)
+    context_msgs = await build_context_messages(conv_id, body_text, db)
+    await store_message(conv_id, "user", body_text, db)
+
+    reply_tokens: List[str] = []
+    try:
+        async for token in dispatch_stream(
+            user_id=user.user_id,
+            text=body_text,
+            skill_id="general",
+            context_messages=context_msgs,
+            db=db,
+        ):
+            reply_tokens.append(token)
+    except Exception:
+        logger.exception("SMS dispatch failed user_id=%s", user.user_id)
+        reply_tokens = ["Sorry, something went wrong. Please try again."]
+
+    reply = "".join(reply_tokens)[:1600]
+    await store_message(conv_id, "assistant", reply, db)
+
+    await send_sms(from_number, reply)
+
+    db.add(
+        NotificationLog(
+            user_id=user.user_id,
+            channel="sms",
+            type="inbound_reply",
+            to_address=from_number,
+            body=reply,
+            status="sent",
+        )
+    )
+    await db.commit()
+
+    asyncio.create_task(_run_summary(conv_id, user.user_id))
+    logger.info("SMS handled user_id=%s reply_len=%d", user.user_id, len(reply))
+
+    return Response(content=_TWIML_EMPTY, media_type="application/xml")
 
 
 # ─── Browser WebSocket chat ────────────────────────────────────────────────────

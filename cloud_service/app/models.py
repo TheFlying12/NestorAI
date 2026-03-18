@@ -1,3 +1,4 @@
+import uuid as _uuid
 from datetime import datetime, timezone
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -18,6 +19,9 @@ class User(Base):
     auth_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="clerk")
     # Fernet-encrypted OpenAI/Gemini key — never stored in plaintext.
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional contact details for SMS/email notifications
+    phone_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    notification_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
@@ -171,3 +175,26 @@ class HabitLog(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NotificationLog(Base):
+    """Audit trail for all sent SMS and email notifications."""
+    __tablename__ = "notification_logs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(_uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 'sms' | 'email'
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 'budget_alert' | 'habit_reminder' | 'job_followup' | 'agent_send' | 'inbound_reply'
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_address: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # 'sent' | 'failed'
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="sent")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )

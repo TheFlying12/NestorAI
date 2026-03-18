@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_service.app.auth import get_user_llm_key
+from cloud_service.app.models import NotificationLog
 from cloud_service.app.skills import budget_assistant, general
 from cloud_service.app.skills import job_tracker, habit_tracker
 
@@ -197,6 +198,124 @@ async def _resolve_llm_complete_with_tools(user_id: str, db: AsyncSession):
     return _make_llm_complete_with_tools(key, SYSTEM_LLM_MODEL, SYSTEM_LLM_BASE_URL)
 
 
+# ─── Shared tools (send_sms / send_email) ─────────────────────────────────────
+
+SEND_SMS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "send_sms",
+        "description": (
+            "Send an SMS to a phone number on behalf of the user. "
+            "Use ONLY when the user explicitly asks to send a text message to someone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Destination phone number in E.164 format, e.g. +14155552671",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Message text (max 1600 characters)",
+                },
+            },
+            "required": ["to", "body"],
+        },
+    },
+}
+
+SEND_EMAIL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "send_email",
+        "description": (
+            "Send an email on behalf of the user. "
+            "Use ONLY when the user explicitly asks to send an email to someone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Plain-text email body (will be wrapped in simple HTML)",
+                },
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+}
+
+
+def _get_shared_tools() -> List[Dict]:
+    """Return shared tool list; empty if neither Twilio nor Resend credentials are set."""
+    from cloud_service.app.integrations.twilio_client import TWILIO_ACCOUNT_SID
+    from cloud_service.app.integrations.resend_client import RESEND_API_KEY
+    tools = []
+    if TWILIO_ACCOUNT_SID:
+        tools.append(SEND_SMS_TOOL)
+    if RESEND_API_KEY:
+        tools.append(SEND_EMAIL_TOOL)
+    return tools
+
+
+async def _shared_tool_executor(name: str, args: Dict, db: Any, user_id: str) -> str:
+    """Execute shared tools (send_sms / send_email) called by the general skill agentic loop."""
+    if name == "send_sms":
+        from cloud_service.app.integrations.twilio_client import send_sms
+        to = args.get("to", "")
+        body = args.get("body", "")
+        if not to or not body:
+            return "Error: 'to' and 'body' are required."
+        await send_sms(to, body)
+        db.add(
+            NotificationLog(
+                user_id=user_id,
+                channel="sms",
+                type="agent_send",
+                to_address=to,
+                body=body,
+                status="sent",
+            )
+        )
+        await db.commit()
+        logger.info("Agent send_sms user_id=%s to=%s", user_id, to)
+        return f"SMS sent to {to}."
+
+    if name == "send_email":
+        from cloud_service.app.integrations.resend_client import send_email
+        to = args.get("to", "")
+        subject = args.get("subject", "Message from Nestor")
+        body = args.get("body", "")
+        if not to or not body:
+            return "Error: 'to' and 'body' are required."
+        html_body = f"<p>{body.replace(chr(10), '<br>')}</p>"
+        await send_email(to, subject, html_body)
+        db.add(
+            NotificationLog(
+                user_id=user_id,
+                channel="email",
+                type="agent_send",
+                to_address=to,
+                body=body,
+                status="sent",
+            )
+        )
+        await db.commit()
+        logger.info("Agent send_email user_id=%s to=%s", user_id, to)
+        return f"Email sent to {to}."
+
+    return f"Unknown shared tool: {name}"
+
+
 # ─── Skill dispatch ───────────────────────────────────────────────────────────
 
 SUPPORTED_SKILLS = {"general", "budget_assistant", "job_tracker", "habit_tracker"}
@@ -277,5 +396,19 @@ async def dispatch_stream(
             ):
                 yield token
     else:
-        async for token in general.handle_stream(user_id, text, context_messages, llm_stream):
-            yield token
+        # Use agentic path if send_sms / send_email tools are configured
+        shared_tools = _get_shared_tools()
+        if shared_tools:
+            try:
+                llm_complete_with_tools = await _resolve_llm_complete_with_tools(user_id, db)
+            except ValueError as exc:
+                yield str(exc)
+                return
+            async for token in general.handle_stream_with_tools(
+                user_id, text, context_messages, llm_stream, llm_complete_with_tools,
+                db, shared_tools, _shared_tool_executor,
+            ):
+                yield token
+        else:
+            async for token in general.handle_stream(user_id, text, context_messages, llm_stream):
+                yield token

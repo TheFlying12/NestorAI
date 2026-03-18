@@ -27,6 +27,7 @@ _models_stub.Conversation = MagicMock()  # type: ignore
 _models_stub.ConversationMessage = MagicMock()   # type: ignore
 _models_stub.ConversationSummary = MagicMock()   # type: ignore
 _models_stub.SkillMemory = MagicMock()   # type: ignore
+_models_stub.NotificationLog = MagicMock()  # type: ignore
 sys.modules["cloud_service.app.models"] = _models_stub
 
 

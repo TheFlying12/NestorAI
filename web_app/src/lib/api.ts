@@ -49,6 +49,26 @@ export async function storeApiKey(apiKey: string, token: string): Promise<void> 
 
 export async function getMe(
   token: string,
-): Promise<{ user_id: string; email: string | null; has_llm_key: boolean }> {
+): Promise<{
+  user_id: string;
+  email: string | null;
+  has_llm_key: boolean;
+  phone_number: string | null;
+  notification_email: string | null;
+}> {
   return apiFetch("/api/auth/me", token);
+}
+
+export async function savePhone(phone: string, token: string): Promise<void> {
+  await apiFetch<{ status: string }>("/api/me/phone", token, {
+    method: "POST",
+    body: JSON.stringify({ phone_number: phone }),
+  });
+}
+
+export async function saveNotificationEmail(email: string, token: string): Promise<void> {
+  await apiFetch<{ status: string }>("/api/me/notification-email", token, {
+    method: "POST",
+    body: JSON.stringify({ notification_email: email }),
+  });
 }
