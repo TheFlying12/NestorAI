@@ -27,7 +27,9 @@ def run_migrations_offline() -> None:
 
 
 async def run_migrations_online() -> None:
-    url = os.environ["DATABASE_URL"]
+    url = os.environ["DATABASE_URL"].replace(
+        "postgresql://", "postgresql+asyncpg://", 1
+    )
     connectable = create_async_engine(url)
     async with connectable.connect() as connection:
         await connection.run_sync(

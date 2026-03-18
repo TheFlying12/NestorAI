@@ -12,4 +12,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["uvicorn", "cloud_service.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "alembic -c cloud_service/alembic.ini upgrade head && uvicorn cloud_service.app.main:app --host 0.0.0.0 --port 8080"]
