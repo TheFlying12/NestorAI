@@ -67,16 +67,6 @@ export function Hero() {
             </Link>
           </Show>
         </div>
-
-        {/* Feature highlights */}
-        <div className="flex flex-wrap items-center justify-center gap-8 text-sm font-semibold text-gray-500">
-          {["No credit card required", "Local-first by design", "Full data control"].map((f) => (
-            <span key={f} className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary inline-block" />
-              {f}
-            </span>
-          ))}
-        </div>
       </div>
     </section>
   );

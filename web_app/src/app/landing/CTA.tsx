@@ -15,7 +15,7 @@ export function CTA() {
           Ready to build your personal AI?
         </h2>
         <p className="text-gray-500 text-base mb-8 mx-auto" style={{ maxWidth: "48ch" }}>
-          Sign up and start running your own agents today. No credit card required.
+          Sign up and start running your own agents today.
         </p>
 
         <Show when="signed-out">
