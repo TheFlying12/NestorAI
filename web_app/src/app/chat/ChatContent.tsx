@@ -63,6 +63,37 @@ export default function ChatContent() {
           { id: newId(), role: "assistant", text: msg.text, timestamp: new Date() },
         ]);
       }
+    } else if (msg.type === "channel_redirect") {
+      setIsTyping(false);
+      streamingIdRef.current = null;
+      const destination = msg.channel === "sms" && msg.masked_to
+        ? `SMS to ${msg.masked_to}`
+        : msg.channel === "sms"
+        ? "SMS"
+        : "email";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "assistant",
+          text: `Response sent via ${destination}.`,
+          timestamp: new Date(),
+          isRedirect: true,
+        },
+      ]);
+    } else if (msg.type === "error") {
+      setIsTyping(false);
+      streamingIdRef.current = null;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "assistant",
+          text: msg.text,
+          timestamp: new Date(),
+          isError: true,
+        },
+      ]);
     }
   }, []);
 
@@ -180,6 +211,12 @@ export default function ChatContent() {
           <span style={{ fontSize: "12px", color: statusColor[wsState] }}>
             ● {statusLabel[wsState]}
           </span>
+          <a
+            href="/account"
+            style={{ fontSize: "12px", color: "var(--text-muted)", textDecoration: "none", padding: "2px 8px" }}
+          >
+            Account
+          </a>
           <a
             href="/"
             style={{ fontSize: "12px", color: "var(--text-muted)", textDecoration: "none", padding: "2px 8px" }}

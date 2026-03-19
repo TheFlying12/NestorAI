@@ -12,7 +12,9 @@ export type WsInbound =
   | { type: "reply"; text: string }
   | { type: "token"; text: string }
   | { type: "typing" }
-  | { type: "pong" };
+  | { type: "pong" }
+  | { type: "channel_redirect"; channel: "sms" | "email"; masked_to?: string }
+  | { type: "error"; text: string };
 
 export type WsOutbound = {
   type: "message" | "ping";
