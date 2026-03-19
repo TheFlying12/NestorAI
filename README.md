@@ -11,6 +11,7 @@ Browser (Next.js PWA)  ──WSS──▶  Cloud API (FastAPI)  ──▶  LLM (
 
 ---
 
+
 ## What You Can Do
 
 NestorAI has two built-in skills:
