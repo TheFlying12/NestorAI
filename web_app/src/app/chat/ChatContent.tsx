@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { ChatWindow } from "@/components/ChatWindow";
 import { SkillSelector, SkillId } from "@/components/SkillSelector";
@@ -169,9 +170,12 @@ export default function ChatContent() {
           >
             ☰
           </button>
-          <span style={{ fontWeight: 600, fontSize: "15px", flex: 1 }}>
-            {skill === "budget_assistant" ? "Budget Assistant" : "Nestor"}
-          </span>
+          <Link
+            href="/"
+            style={{ fontWeight: 700, fontSize: "15px", color: "var(--text)", textDecoration: "none", flex: 1 }}
+          >
+            Nestor
+          </Link>
           <span style={{ fontSize: "12px", color: statusColor[wsState] }}>
             ● {statusLabel[wsState]}
           </span>
@@ -183,6 +187,13 @@ export default function ChatContent() {
               Reconnect
             </button>
           ) : null}
+          <Link
+            href="/settings"
+            aria-label="Settings"
+            style={{ fontSize: "18px", color: "var(--text-muted)", textDecoration: "none", lineHeight: 1 }}
+          >
+            ⚙
+          </Link>
         </div>
 
         {/* Chat */}
