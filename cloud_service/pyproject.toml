@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths  = ["tests"]
+env_files  = [".env.test"]           # loaded by pytest-dotenv if file exists
+addopts    = "-v --tb=short"
+
+# Run subsets:
+#   pytest tests/                          all tests
+#   pytest tests/integration/             integration only
+#   pytest tests/test_cloud_invariants.py unit invariants only

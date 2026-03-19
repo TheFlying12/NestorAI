@@ -1,4 +1,10 @@
 .env
+.env.test
+
+# pytest / coverage artefacts
+.coverage
+htmlcov/
+.pytest_cache/
 
 
 __pycache__/
