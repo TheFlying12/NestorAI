@@ -15,6 +15,9 @@ function newId() {
 
 export default function ChatContent() {
   const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken; // keep ref current without triggering effects
+
   const wsRef = useRef<NestorWS | null>(null);
   const streamingIdRef = useRef<string | null>(null);
 
@@ -63,13 +66,15 @@ export default function ChatContent() {
     }
   }, []);
 
-  // Connect WebSocket on mount
+  // Connect WebSocket on mount — stable reference via ref avoids
+  // reconnect loops when getToken identity changes on re-renders.
   useEffect(() => {
-    const ws = new NestorWS(handleWsMessage, setWsState, getToken);
+    const ws = new NestorWS(handleWsMessage, setWsState, () => getTokenRef.current());
     wsRef.current = ws;
     ws.connect();
     return () => ws.disconnect();
-  }, [handleWsMessage, getToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleWsMessage]);
 
   // Load conversation history when skill changes
   useEffect(() => {
@@ -175,6 +180,12 @@ export default function ChatContent() {
           <span style={{ fontSize: "12px", color: statusColor[wsState] }}>
             ● {statusLabel[wsState]}
           </span>
+          <a
+            href="/"
+            style={{ fontSize: "12px", color: "var(--text-muted)", textDecoration: "none", padding: "2px 8px" }}
+          >
+            Home
+          </a>
           {wsState === "disconnected" || wsState === "error" ? (
             <button
               onClick={() => wsRef.current?.connect()}

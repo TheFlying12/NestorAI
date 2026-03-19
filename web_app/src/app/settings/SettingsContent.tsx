@@ -132,7 +132,8 @@ export default function SettingsContent() {
     <div style={{ minHeight: "100vh", background: "var(--bg)", padding: "32px 20px", maxWidth: "520px", margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "32px" }}>
         <a href="/chat" style={{ color: "var(--text-muted)", fontSize: "20px" }}>←</a>
-        <h1 style={{ fontSize: "20px", fontWeight: 700 }}>Settings</h1>
+        <h1 style={{ fontSize: "20px", fontWeight: 700, flex: 1 }}>Settings</h1>
+        <a href="/" style={{ fontSize: "13px", color: "var(--text-muted)", textDecoration: "none" }}>Home</a>
       </div>
 
       {/* Account */}
