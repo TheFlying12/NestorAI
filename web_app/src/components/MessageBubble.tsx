@@ -28,7 +28,7 @@ export function MessageBubble({ message }: Props) {
           padding: "10px 14px",
           borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
           background: isUser ? "var(--user-bubble)" : "var(--assistant-bubble)",
-          color: "var(--text)",
+          color: isUser ? "var(--user-bubble-text)" : "var(--text)",
           fontSize: "14px",
           lineHeight: "1.5",
           border: isUser ? "none" : "1px solid var(--border)",

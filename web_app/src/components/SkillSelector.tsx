@@ -36,7 +36,7 @@ export function SkillSelector({ selected, onChange }: Props) {
             padding: "10px 12px",
             borderRadius: "8px",
             marginBottom: "4px",
-            background: selected === skill.id ? "rgba(124,106,247,0.15)" : "transparent",
+            background: selected === skill.id ? "rgba(94,111,82,0.12)" : "transparent",
             border: selected === skill.id ? "1px solid var(--accent)" : "1px solid transparent",
             color: selected === skill.id ? "var(--accent)" : "var(--text)",
             transition: "all 0.15s",
