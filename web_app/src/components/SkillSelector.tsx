@@ -1,19 +1,8 @@
 "use client";
 
-export type SkillId = "general" | "budget_assistant" | "job_tracker" | "habit_tracker";
+import { SkillId, SKILLS } from "@/lib/skills";
 
-interface Skill {
-  id: SkillId;
-  label: string;
-  description: string;
-}
-
-const SKILLS: Skill[] = [
-  { id: "general", label: "General", description: "General purpose assistant" },
-  { id: "budget_assistant", label: "Budget", description: "Track spending & budgets" },
-  { id: "job_tracker", label: "Jobs", description: "Track job applications" },
-  { id: "habit_tracker", label: "Habits", description: "Build and track habits" },
-];
+export type { SkillId };
 
 interface Props {
   selected: SkillId;
@@ -36,7 +25,7 @@ export function SkillSelector({ selected, onChange }: Props) {
             padding: "10px 12px",
             borderRadius: "8px",
             marginBottom: "4px",
-            background: selected === skill.id ? "rgba(124,106,247,0.15)" : "transparent",
+            background: selected === skill.id ? "rgba(94,111,82,0.12)" : "transparent",
             border: selected === skill.id ? "1px solid var(--accent)" : "1px solid transparent",
             color: selected === skill.id ? "var(--accent)" : "var(--text)",
             transition: "all 0.15s",

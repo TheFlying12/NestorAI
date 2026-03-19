@@ -177,6 +177,25 @@ class HabitLog(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class UserSkillChannel(Base):
+    """Per-user, per-skill delivery channel preference."""
+    __tablename__ = "user_skill_channels"
+    __table_args__ = (UniqueConstraint("user_id", "skill_id", name="uq_user_skill_channel"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    skill_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel: Mapped[str] = mapped_column(String(8), nullable=False, default="web")  # 'web' | 'sms' | 'email'
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow, server_default=func.now()
+    )
+
+
 class NotificationLog(Base):
     """Audit trail for all sent SMS and email notifications."""
     __tablename__ = "notification_logs"

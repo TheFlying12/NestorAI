@@ -5,6 +5,8 @@ export interface Message {
   role: "user" | "assistant";
   text: string;
   timestamp: Date;
+  isRedirect?: boolean;
+  isError?: boolean;
 }
 
 interface Props {
@@ -13,6 +15,47 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === "user";
+
+  if (message.isRedirect) {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "12px" }}>
+        <div
+          style={{
+            maxWidth: "75%",
+            padding: "8px 14px",
+            borderRadius: "18px 18px 18px 4px",
+            background: "var(--assistant-bubble)",
+            color: "var(--text-muted)",
+            fontSize: "13px",
+            fontStyle: "italic",
+            border: "1px solid var(--border)",
+          }}
+        >
+          {message.text}
+        </div>
+      </div>
+    );
+  }
+
+  if (message.isError) {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "12px" }}>
+        <div
+          style={{
+            maxWidth: "75%",
+            padding: "8px 14px",
+            borderRadius: "18px 18px 18px 4px",
+            background: "rgba(239,68,68,0.08)",
+            color: "var(--danger)",
+            fontSize: "13px",
+            border: "1px solid rgba(239,68,68,0.3)",
+          }}
+        >
+          {message.text}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -28,7 +71,7 @@ export function MessageBubble({ message }: Props) {
           padding: "10px 14px",
           borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
           background: isUser ? "var(--user-bubble)" : "var(--assistant-bubble)",
-          color: "var(--text)",
+          color: isUser ? "var(--user-bubble-text)" : "var(--text)",
           fontSize: "14px",
           lineHeight: "1.5",
           border: isUser ? "none" : "1px solid var(--border)",

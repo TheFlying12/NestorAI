@@ -72,3 +72,24 @@ export async function saveNotificationEmail(email: string, token: string): Promi
     body: JSON.stringify({ notification_email: email }),
   });
 }
+
+export interface SkillChannel {
+  skill_id: string;
+  channel: "web" | "sms" | "email";
+}
+
+export async function getSkillChannels(token: string): Promise<SkillChannel[]> {
+  const data = await apiFetch<{ channels: SkillChannel[] }>("/api/me/skill-channels", token);
+  return data.channels;
+}
+
+export async function saveSkillChannel(
+  skillId: string,
+  channel: "web" | "sms" | "email",
+  token: string,
+): Promise<void> {
+  await apiFetch<{ status: string }>("/api/me/skill-channel", token, {
+    method: "POST",
+    body: JSON.stringify({ skill_id: skillId, channel }),
+  });
+}
