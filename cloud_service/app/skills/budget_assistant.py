@@ -247,6 +247,20 @@ BUDGET_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_sms_to_user",
+            "description": "Send an SMS message to the user's phone number. Use for reminders, alerts, or any message the user wants sent to their phone. Only works if the user has a phone number on file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "The message to send via SMS"},
+                },
+                "required": ["message"],
+            },
+        },
+    },
 ]
 
 
@@ -422,6 +436,27 @@ async def _execute_tool(name: str, args: Dict, db: AsyncSession, user_id: str) -
         await db.commit()
         return f"Deleted transaction {txn_id}: {desc}."
 
+    if name == "send_sms_to_user":
+        message = args.get("message", "").strip()
+        if not message:
+            return "No message provided."
+        user_result = await db.execute(select(User).where(User.user_id == user_id))
+        user_obj = user_result.scalar_one_or_none()
+        if not user_obj or not user_obj.phone_number:
+            return "No phone number on file. The user needs to add one in Account settings."
+        try:
+            from cloud_service.app.integrations.twilio_client import send_sms
+            await send_sms(user_obj.phone_number, message)
+            db.add(NotificationLog(
+                user_id=user_id, channel="sms", type="agent_send",
+                to_address=user_obj.phone_number, body=message, status="sent",
+            ))
+            await db.commit()
+            return f"SMS sent to {user_obj.phone_number}."
+        except Exception as exc:
+            logger.warning("send_sms_to_user failed user_id=%s: %s", user_id, exc)
+            return f"Failed to send SMS: {exc}"
+
     return f"Unknown tool: {name}"
 
 
@@ -437,13 +472,15 @@ Your tools:
 - get_budget_limits: Use when asked about budget limits or remaining budget.
 - set_budget_limit: Use when user wants to change a budget limit.
 - delete_transaction: Use when user says a transaction was wrong or wants to remove it.
+- send_sms_to_user: Use when the user asks you to send them a reminder, alert, or any message via SMS/text/phone. Sends immediately.
 
 Guidelines:
 - When the user mentions ANY purchase, spending, or payment — immediately call log_transaction. Don't ask for confirmation.
 - Infer category from context: coffee/restaurant = food, Uber/gas = transport, Netflix/Spotify = entertainment.
 - After logging, briefly confirm and mention if they're near/over budget for that category.
 - Be concise. One or two sentences is usually enough after a transaction log.
-- If showing a summary, include totals and any budget alerts prominently."""
+- If showing a summary, include totals and any budget alerts prominently.
+- When asked to send a reminder or text, call send_sms_to_user immediately. Note: messages send right away, not on a delay."""
 
 
 async def handle(
