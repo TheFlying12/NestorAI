@@ -1,4 +1,4 @@
-"""NestorAI Cloud Service — main FastAPI application.
+"""NestorAI Cloud Service — main FastAPI application. (rev: 2026-03-19)
 
 Channels:
 - Browser WebSocket →  WebSocket /chat (Clerk JWT auth)
