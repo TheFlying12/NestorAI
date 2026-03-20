@@ -51,8 +51,11 @@ export default function AccountContent() {
     try {
       const token = await getToken();
       if (!token) throw new Error("Not signed in");
-      await savePhone(phoneInput.trim(), token);
-      setCurrentPhone(phoneInput.trim());
+      // Normalize: strip spaces, dashes, parens, dots; add + prefix if missing
+      const stripped = phoneInput.trim().replace(/[\s\-().]/g, "");
+      const normalized = stripped.startsWith("+") ? stripped : `+${stripped}`;
+      await savePhone(normalized, token);
+      setCurrentPhone(normalized);
       setPhoneInput("");
       setPhoneMsg("Phone number saved.");
     } catch (err: unknown) {
@@ -156,7 +159,7 @@ export default function AccountContent() {
         </p>
         <input
           type="tel"
-          placeholder="+14155550100"
+          placeholder="+14155550100 or 14155550100"
           value={phoneInput}
           onChange={(e) => setPhoneInput(e.target.value)}
           style={inputStyle}
