@@ -51,9 +51,9 @@ export default function AccountContent() {
     try {
       const token = await getToken();
       if (!token) throw new Error("Not signed in");
-      // Normalize: strip spaces, dashes, parens, dots; add + prefix if missing
-      const stripped = phoneInput.trim().replace(/[\s\-().]/g, "");
-      const normalized = stripped.startsWith("+") ? stripped : `+${stripped}`;
+      // Strip formatting, then prepend +1 (US)
+      const digits = phoneInput.trim().replace(/[\s\-().]/g, "").replace(/^\+?1?/, "");
+      const normalized = `+1${digits}`;
       await savePhone(normalized, token);
       setCurrentPhone(normalized);
       setPhoneInput("");
@@ -157,13 +157,25 @@ export default function AccountContent() {
             ? `Current: ${currentPhone}. Paste a new number to replace it.`
             : "Add your phone number to text Nestor directly and receive budget alerts via SMS."}
         </p>
-        <input
-          type="tel"
-          placeholder="+14155550100 or 14155550100"
-          value={phoneInput}
-          onChange={(e) => setPhoneInput(e.target.value)}
-          style={inputStyle}
-        />
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+          <span style={{
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRight: "none",
+            borderRadius: "8px 0 0 8px",
+            padding: "8px 10px",
+            color: "var(--text-muted)",
+            fontSize: "14px",
+            whiteSpace: "nowrap",
+          }}>+1</span>
+          <input
+            type="tel"
+            placeholder="(415) 555-0100"
+            value={phoneInput}
+            onChange={(e) => setPhoneInput(e.target.value)}
+            style={{ ...inputStyle, marginBottom: 0, borderRadius: "0 8px 8px 0", borderLeft: "none" }}
+          />
+        </div>
         <button
           onClick={handleSavePhone}
           disabled={savingPhone || !phoneInput.trim()}
