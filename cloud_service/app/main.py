@@ -27,7 +27,7 @@ from cloud_service.app.context import (
     store_message,
 )
 from cloud_service.app.db import AsyncSessionLocal, create_all_tables, get_db
-from cloud_service.app.models import Conversation, ConversationMessage, NotificationLog, User
+from cloud_service.app.models import Conversation, ConversationMessage, NotificationLog, User, UserSkillChannel
 from cloud_service.app.notifications import scheduler as notification_scheduler
 from cloud_service.app.skills import router as skill_router
 from cloud_service.app.skills.router import (
@@ -257,6 +257,53 @@ async def set_notification_email(
     return {"status": "ok"}
 
 
+# ─── Skill channel preference endpoints ───────────────────────────────────────
+
+_VALID_CHANNELS = {"web", "sms", "email"}
+
+
+class SkillChannelUpdate(BaseModel):
+    skill_id: str
+    channel: str  # 'web' | 'sms' | 'email'
+
+
+@app.get("/api/me/skill-channels")
+async def get_skill_channels(
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    result = await db.execute(
+        select(UserSkillChannel).where(UserSkillChannel.user_id == user_id)
+    )
+    rows = result.scalars().all()
+    return {
+        "channels": [{"skill_id": r.skill_id, "channel": r.channel} for r in rows]
+    }
+
+
+@app.post("/api/me/skill-channel")
+async def set_skill_channel(
+    body: SkillChannelUpdate,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, str]:
+    if body.channel not in _VALID_CHANNELS:
+        raise HTTPException(400, f"channel must be one of: {', '.join(sorted(_VALID_CHANNELS))}")
+    result = await db.execute(
+        select(UserSkillChannel).where(
+            UserSkillChannel.user_id == user_id,
+            UserSkillChannel.skill_id == body.skill_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row:
+        row.channel = body.channel
+    else:
+        db.add(UserSkillChannel(user_id=user_id, skill_id=body.skill_id, channel=body.channel))
+    await db.commit()
+    return {"status": "ok"}
+
+
 # ─── Twilio inbound SMS webhook ────────────────────────────────────────────────
 
 _TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
@@ -391,35 +438,116 @@ async def browser_chat(
 
             await websocket.send_json({"type": "typing"})
 
+            # Resolve delivery channel preference for this skill
+            ch_result = await db.execute(
+                select(UserSkillChannel).where(
+                    UserSkillChannel.user_id == user_id,
+                    UserSkillChannel.skill_id == skill_id,
+                )
+            )
+            ch_row = ch_result.scalar_one_or_none()
+            delivery_channel = ch_row.channel if ch_row else "web"
+
             conv_id = await get_or_create_conversation(user_id, "web", user_id, skill_id, db)
             # Build context BEFORE storing so the current user message isn't
             # fetched from DB and then appended a second time by build_context_messages.
             context_msgs = await build_context_messages(conv_id, text, db)
             await store_message(conv_id, "user", text, db)
 
-            accumulated: List[str] = []
-            try:
-                async for token in dispatch_stream(
-                    user_id=user_id,
-                    text=text,
-                    skill_id=skill_id,
-                    context_messages=context_msgs,
-                    db=db,
-                ):
-                    accumulated.append(token)
-                    await websocket.send_json({"type": "token", "text": token})
-            except LLMError as exc:
-                logger.warning("LLM error user_id=%s skill=%s: %s", user_id, skill_id, exc)
-                accumulated = [str(exc)]
-                await websocket.send_json({"type": "token", "text": str(exc)})
-            except Exception:
-                logger.exception("Skill dispatch_stream failed user_id=%s", user_id)
-                accumulated = ["Something went wrong. Please try again."]
-                await websocket.send_json({"type": "token", "text": accumulated[0]})
+            if delivery_channel == "web":
+                # Default: stream tokens to WebSocket
+                accumulated: List[str] = []
+                try:
+                    async for token in dispatch_stream(
+                        user_id=user_id,
+                        text=text,
+                        skill_id=skill_id,
+                        context_messages=context_msgs,
+                        db=db,
+                    ):
+                        accumulated.append(token)
+                        await websocket.send_json({"type": "token", "text": token})
+                except LLMError as exc:
+                    logger.warning("LLM error user_id=%s skill=%s: %s", user_id, skill_id, exc)
+                    accumulated = [str(exc)]
+                    await websocket.send_json({"type": "token", "text": str(exc)})
+                except Exception:
+                    logger.exception("Skill dispatch_stream failed user_id=%s", user_id)
+                    accumulated = ["Something went wrong. Please try again."]
+                    await websocket.send_json({"type": "token", "text": accumulated[0]})
 
-            full_reply = "".join(accumulated)
-            await store_message(conv_id, "assistant", full_reply, db)
-            await websocket.send_json({"type": "reply", "text": full_reply})
+                full_reply = "".join(accumulated)
+                await store_message(conv_id, "assistant", full_reply, db)
+                await websocket.send_json({"type": "reply", "text": full_reply})
+
+            else:
+                # SMS or email: collect full reply, send out-of-band, notify web with redirect frame
+                user_result = await db.execute(select(User).where(User.user_id == user_id))
+                user_obj = user_result.scalar_one_or_none()
+
+                if delivery_channel == "sms" and not (user_obj and user_obj.phone_number):
+                    await websocket.send_json({"type": "error", "text": "No phone number on file. Add one in Account settings."})
+                    continue
+                if delivery_channel == "email" and not (user_obj and user_obj.notification_email):
+                    await websocket.send_json({"type": "error", "text": "No notification email on file. Add one in Account settings."})
+                    continue
+
+                accumulated_offband: List[str] = []
+                try:
+                    async for token in dispatch_stream(
+                        user_id=user_id,
+                        text=text,
+                        skill_id=skill_id,
+                        context_messages=context_msgs,
+                        db=db,
+                    ):
+                        accumulated_offband.append(token)
+                except LLMError as exc:
+                    logger.warning("LLM error (offband) user_id=%s skill=%s: %s", user_id, skill_id, exc)
+                    accumulated_offband = [str(exc)]
+                except Exception:
+                    logger.exception("Skill dispatch_stream (offband) failed user_id=%s", user_id)
+                    accumulated_offband = ["Something went wrong. Please try again."]
+
+                full_reply = "".join(accumulated_offband)
+                await store_message(conv_id, "assistant", full_reply, db)
+
+                if delivery_channel == "sms":
+                    from cloud_service.app.integrations.twilio_client import send_sms
+                    phone = user_obj.phone_number
+                    try:
+                        await send_sms(phone, full_reply[:1600])
+                    except Exception:
+                        logger.exception("send_sms (offband) failed user_id=%s", user_id)
+                    masked = phone[:3] + "..." + phone[-3:]
+                    db.add(NotificationLog(
+                        user_id=user_id,
+                        channel="sms",
+                        type="agent_send",
+                        to_address=phone,
+                        body=full_reply[:1600],
+                        status="sent",
+                    ))
+                    await db.commit()
+                    await websocket.send_json({"type": "channel_redirect", "channel": "sms", "masked_to": masked})
+
+                else:  # email
+                    from cloud_service.app.integrations.resend_client import send_email
+                    notif_email = user_obj.notification_email
+                    try:
+                        await send_email(notif_email, "Nestor reply", f"<pre style='white-space:pre-wrap'>{full_reply}</pre>")
+                    except Exception:
+                        logger.exception("send_email (offband) failed user_id=%s", user_id)
+                    db.add(NotificationLog(
+                        user_id=user_id,
+                        channel="email",
+                        type="agent_send",
+                        to_address=notif_email,
+                        body=full_reply,
+                        status="sent",
+                    ))
+                    await db.commit()
+                    await websocket.send_json({"type": "channel_redirect", "channel": "email"})
 
             asyncio.create_task(_run_summary(conv_id, user_id))
 

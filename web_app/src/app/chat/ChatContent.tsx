@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { ChatWindow } from "@/components/ChatWindow";
 import { SkillSelector, SkillId } from "@/components/SkillSelector";
@@ -63,6 +64,37 @@ export default function ChatContent() {
           { id: newId(), role: "assistant", text: msg.text, timestamp: new Date() },
         ]);
       }
+    } else if (msg.type === "channel_redirect") {
+      setIsTyping(false);
+      streamingIdRef.current = null;
+      const destination = msg.channel === "sms" && msg.masked_to
+        ? `SMS to ${msg.masked_to}`
+        : msg.channel === "sms"
+        ? "SMS"
+        : "email";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "assistant",
+          text: `Response sent via ${destination}.`,
+          timestamp: new Date(),
+          isRedirect: true,
+        },
+      ]);
+    } else if (msg.type === "error") {
+      setIsTyping(false);
+      streamingIdRef.current = null;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "assistant",
+          text: msg.text,
+          timestamp: new Date(),
+          isError: true,
+        },
+      ]);
     }
   }, []);
 
@@ -174,12 +206,21 @@ export default function ChatContent() {
           >
             ☰
           </button>
-          <span style={{ fontWeight: 600, fontSize: "15px", flex: 1 }}>
-            {skill === "budget_assistant" ? "Budget Assistant" : "Nestor"}
-          </span>
+          <Link
+            href="/"
+            style={{ fontWeight: 700, fontSize: "15px", color: "var(--text)", textDecoration: "none", flex: 1 }}
+          >
+            Nestor
+          </Link>
           <span style={{ fontSize: "12px", color: statusColor[wsState] }}>
             ● {statusLabel[wsState]}
           </span>
+          <a
+            href="/account"
+            style={{ fontSize: "12px", color: "var(--text-muted)", textDecoration: "none", padding: "2px 8px" }}
+          >
+            Account
+          </a>
           <a
             href="/"
             style={{ fontSize: "12px", color: "var(--text-muted)", textDecoration: "none", padding: "2px 8px" }}
@@ -194,6 +235,13 @@ export default function ChatContent() {
               Reconnect
             </button>
           ) : null}
+          <Link
+            href="/settings"
+            aria-label="Settings"
+            style={{ fontSize: "18px", color: "var(--text-muted)", textDecoration: "none", lineHeight: 1 }}
+          >
+            ⚙
+          </Link>
         </div>
 
         {/* Chat */}
