@@ -11,6 +11,7 @@ export default function AccountContent() {
   // Phone number state
   const [currentPhone, setCurrentPhone] = useState<string | null>(null);
   const [phoneInput, setPhoneInput] = useState("");
+  const [smsOptIn, setSmsOptIn] = useState(false);
   const [savingPhone, setSavingPhone] = useState(false);
   const [phoneMsg, setPhoneMsg] = useState<string | null>(null);
 
@@ -45,7 +46,7 @@ export default function AccountContent() {
   }, [getToken]);
 
   async function handleSavePhone() {
-    if (!phoneInput.trim()) return;
+    if (!phoneInput.trim() || !smsOptIn) return;
     setSavingPhone(true);
     setPhoneMsg(null);
     try {
@@ -57,7 +58,8 @@ export default function AccountContent() {
       await savePhone(normalized, token);
       setCurrentPhone(normalized);
       setPhoneInput("");
-      setPhoneMsg("Phone number saved.");
+      setSmsOptIn(false);
+      setPhoneMsg("Phone number saved. You'll receive a confirmation text shortly.");
     } catch (err: unknown) {
       setPhoneMsg(err instanceof Error ? err.message : "Failed to save phone number.");
     } finally {
@@ -176,15 +178,26 @@ export default function AccountContent() {
             style={{ ...inputStyle, marginBottom: 0, borderRadius: "0 8px 8px 0", borderLeft: "none" }}
           />
         </div>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "10px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={smsOptIn}
+            onChange={(e) => setSmsOptIn(e.target.checked)}
+            style={{ marginTop: "2px", flexShrink: 0 }}
+          />
+          <span style={{ fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.4" }}>
+            I agree to receive SMS notifications from Nestor. Msg &amp; data rates may apply. Reply STOP to unsubscribe at any time.
+          </span>
+        </label>
         <button
           onClick={handleSavePhone}
-          disabled={savingPhone || !phoneInput.trim()}
-          style={btnStyle(savingPhone || !phoneInput.trim())}
+          disabled={savingPhone || !phoneInput.trim() || !smsOptIn}
+          style={btnStyle(savingPhone || !phoneInput.trim() || !smsOptIn)}
         >
           {savingPhone ? "Saving…" : "Save phone"}
         </button>
         {phoneMsg && (
-          <p style={{ marginTop: "8px", fontSize: "13px", color: phoneMsg === "Phone number saved." ? "#4ade80" : "var(--danger)" }}>
+          <p style={{ marginTop: "8px", fontSize: "13px", color: phoneMsg?.startsWith("Phone number saved") ? "#4ade80" : "var(--danger)" }}>
             {phoneMsg}
           </p>
         )}

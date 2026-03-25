@@ -18,6 +18,9 @@ export function Footer() {
           <Link href="/about" className="text-sm transition-colors" style={{ color: "#9A9A9A" }}>
             About Us
           </Link>
+          <Link href="/sms-policy" className="text-sm transition-colors" style={{ color: "#9A9A9A" }}>
+            SMS Policy
+          </Link>
         </nav>
       </div>
     </footer>

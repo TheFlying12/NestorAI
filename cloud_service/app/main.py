@@ -235,8 +235,32 @@ async def set_phone(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(404, "User not found")
+    is_new_number = user.phone_number != body.phone_number
     user.phone_number = body.phone_number
     await db.commit()
+
+    if is_new_number:
+        try:
+            from cloud_service.app.integrations.twilio_client import send_sms
+            opt_in_msg = (
+                "Welcome to Nestor! You've opted in to SMS notifications. "
+                "Reply STOP to unsubscribe, HELP for help. Msg & data rates may apply."
+            )
+            await send_sms(body.phone_number, opt_in_msg)
+            await db.refresh(user)
+            log = NotificationLog(
+                user_id=user_id,
+                channel="sms",
+                type="opt_in",
+                to_address=body.phone_number,
+                body=opt_in_msg,
+                status="sent",
+            )
+            db.add(log)
+            await db.commit()
+        except Exception:
+            logger.exception("opt-in SMS failed for user_id=%s", user_id)
+
     return {"status": "ok"}
 
 
