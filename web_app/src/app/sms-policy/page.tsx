@@ -42,7 +42,7 @@ export default function SmsPolicyPage() {
         <Section title="How We Collect Opt-In Consent">
           <p className="mb-4">
             SMS consent is collected exclusively through the Nestor AI account settings page
-            (<strong>nestorai.app/account</strong>). To opt in, a user must:
+            (<strong>nestorai.co/account</strong>). To opt in, a user must:
           </p>
           <ol className="list-decimal pl-6 space-y-2">
             <li>Sign in to their Nestor AI account.</li>
@@ -90,8 +90,8 @@ export default function SmsPolicyPage() {
         <Section title="Help">
           <p>
             Reply <strong>HELP</strong> to any message for assistance, or contact us at{" "}
-            <a href="mailto:support@nestorai.app" style={{ color: "#5E6F52" }}>
-              support@nestorai.app
+            <a href="mailto:support@nestorai.co" style={{ color: "#5E6F52" }}>
+              support@nestorai.co
             </a>
             .
           </p>
@@ -125,8 +125,8 @@ export default function SmsPolicyPage() {
         <Section title="Contact">
           <p>
             Nestor AI<br />
-            <a href="mailto:support@nestorai.app" style={{ color: "#5E6F52" }}>
-              support@nestorai.app
+            <a href="mailto:support@nestorai.co" style={{ color: "#5E6F52" }}>
+              support@nestorai.co
             </a>
           </p>
         </Section>
